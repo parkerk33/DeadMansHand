@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fantasy Poker</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0a0810;
+      overflow: hidden;
+      font-family: 'Georgia', serif;
+      color: #f0e0b0;
+      user-select: none;
+    }
+
+    canvas { display: block; }
+
+    /* ── Menu Overlay ────────────────────────────────────────── */
+    #menu-overlay {
+      position: fixed; inset: 0;
+      background: radial-gradient(ellipse at center, #1a0e3a 0%, #06040e 100%);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      z-index: 100;
+    }
+
+    #menu-overlay h1 {
+      font-size: 3rem; color: #c4a843;
+      text-shadow: 0 0 20px #c4a84380, 0 2px 4px #000;
+      letter-spacing: 4px; margin-bottom: 0.3rem;
+    }
+    #menu-overlay .subtitle {
+      font-size: 1rem; color: #9a8060; letter-spacing: 2px; margin-bottom: 2.5rem;
+    }
+
+    .class-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr);
+      gap: 14px; margin-bottom: 2rem; max-width: 780px;
+    }
+
+    .class-card {
+      background: rgba(255,255,255,0.04);
+      border: 2px solid rgba(196,168,67,0.3);
+      border-radius: 10px; padding: 14px 10px;
+      cursor: pointer; text-align: center;
+      transition: all 0.2s ease;
+      min-width: 140px;
+    }
+    .class-card:hover {
+      border-color: #c4a843;
+      background: rgba(196,168,67,0.12);
+      transform: translateY(-3px);
+    }
+    .class-card.selected {
+      border-color: #ffd700;
+      background: rgba(196,168,67,0.22);
+      box-shadow: 0 0 18px #c4a84360;
+    }
+
+    .class-emoji { font-size: 2.2rem; margin-bottom: 6px; }
+    .class-name { font-size: 0.95rem; color: #c4a843; font-weight: bold; letter-spacing: 1px; }
+    .class-passive {
+      font-size: 0.7rem; color: #9a8060; margin-top: 4px; line-height: 1.3;
+    }
+
+    #start-btn {
+      padding: 14px 54px; font-size: 1.2rem; font-family: Georgia, serif;
+      background: linear-gradient(135deg, #c4a843, #8a6820);
+      color: #1a0e0a; border: none; border-radius: 8px;
+      cursor: pointer; letter-spacing: 2px;
+      box-shadow: 0 4px 20px #c4a84340;
+      transition: all 0.2s;
+    }
+    #start-btn:hover { transform: scale(1.06); box-shadow: 0 6px 28px #c4a84360; }
+    #start-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+    /* ── HUD ─────────────────────────────────────────────────── */
+    #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+
+    /* Pot — gold plaque, top center */
+    #pot-display {
+      position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+      background: linear-gradient(180deg, rgba(26,20,54,0.92), rgba(10,8,22,0.92));
+      border: 2px solid #c79a3a;
+      box-shadow: inset 0 0 12px rgba(199,154,58,0.25), 0 4px 14px rgba(0,0,0,0.5);
+      border-radius: 22px; padding: 8px 28px;
+      font-size: 1.15rem; color: #ffd886; letter-spacing: 2px;
+      text-shadow: 0 1px 2px #000;
+    }
+
+    /* Player panels — navy/gold beveled plaques */
+    .player-panel {
+      position: absolute;
+      background: linear-gradient(180deg, rgba(26,20,54,0.9), rgba(10,8,22,0.9));
+      border: 1.5px solid #8a6d2e; border-radius: 10px;
+      box-shadow: inset 0 0 10px rgba(199,154,58,0.18), 0 3px 10px rgba(0,0,0,0.45);
+      padding: 8px 14px; min-width: 132px;
+      display: flex; flex-direction: column; align-items: center; gap: 2px;
+      transition: border-color 0.3s, box-shadow 0.3s;
+    }
+    .player-panel.active-turn {
+      border-color: #ffd886;
+      box-shadow: inset 0 0 12px rgba(255,216,134,0.3), 0 0 16px #ffcf5a70;
+    }
+    .player-panel.folded { opacity: 0.4; filter: grayscale(0.5); }
+    .player-panel.inactive { opacity: 0.22; }
+
+    .p-class { font-size: 1.7rem; filter: drop-shadow(0 1px 1px #000); }
+    .p-name { font-size: 0.84rem; color: #f0dca0; letter-spacing: 1px; font-weight: bold; }
+    .p-chips { font-size: 0.78rem; color: #b8a36a; }
+
+    /* No panel sits dead-center under the chandelier/pot */
+    #player-panel-0 { bottom: 96px; left: 50%; transform: translateX(-50%); }
+    #player-panel-1 { top: 50%; left: 16px; transform: translateY(-50%); }
+    #player-panel-2 { top: 14px; left: 20px; }
+    #player-panel-3 { top: 50%; right: 16px; transform: translateY(-50%); }
+
+    /* Action bar */
+    #action-bar {
+      position: absolute; bottom: 22px; left: 50%;
+      transform: translateX(-50%);
+      display: flex; gap: 10px;
+      pointer-events: all;
+    }
+
+    .action-btn {
+      padding: 10px 22px; font-size: 0.9rem; font-family: Georgia, serif;
+      border: 1px solid #c4a843; border-radius: 6px;
+      background: rgba(10,6,22,0.88); color: #f0e0b0;
+      cursor: pointer; letter-spacing: 1px;
+      transition: all 0.18s;
+    }
+    .action-btn:hover:not(:disabled) {
+      background: rgba(196,168,67,0.22); color: #ffd700;
+    }
+    .action-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+    .action-btn.danger { border-color: #c04040; }
+    .action-btn.danger:hover:not(:disabled) { background: rgba(192,64,64,0.2); color: #ff8080; }
+
+    /* Raise panel */
+    #raise-panel {
+      display: none;
+      position: absolute; bottom: 68px; left: 50%;
+      transform: translateX(-50%);
+      background: rgba(10,6,22,0.92); border: 1px solid #c4a84360;
+      border-radius: 10px; padding: 12px 16px;
+      gap: 10px; flex-direction: row;
+      pointer-events: all;
+    }
+    #raise-panel.visible { display: flex; }
+
+    /* Ability button */
+    #btn-ability {
+      position: absolute; bottom: 22px; right: 22px;
+      padding: 10px 18px; font-size: 0.88rem; font-family: Georgia, serif;
+      border: 1px solid #9b59b6; border-radius: 8px;
+      background: rgba(155,89,182,0.18); color: #d0a0f8;
+      cursor: pointer; pointer-events: all;
+      transition: all 0.18s; max-width: 200px;
+    }
+    #btn-ability:hover:not(:disabled) {
+      background: rgba(155,89,182,0.4); color: #f0d0ff;
+    }
+    #btn-ability:disabled { opacity: 0.3; cursor: not-allowed; }
+
+    /* Ability info (top-right) */
+    #ability-info {
+      position: absolute; top: 14px; right: 14px;
+      background: rgba(10,6,22,0.82); border: 1px solid #9b59b660;
+      border-radius: 8px; padding: 10px 14px; max-width: 200px;
+      font-size: 0.72rem; color: #c0a0e0; line-height: 1.5;
+    }
+    #ability-info #passive-name { font-weight: bold; color: #d4b0f8; }
+    #ability-info #ultimate-desc { color: #a090c8; }
+
+    /* Message overlay */
+    #msg-overlay {
+      display: none;
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(10,6,22,0.9); border: 2px solid #c4a843;
+      border-radius: 12px; padding: 18px 32px;
+      font-size: 1.15rem; color: #ffd700;
+      text-align: center; max-width: 420px;
+      letter-spacing: 1px;
+    }
+
+    /* Round control buttons */
+    #btn-next-round, #btn-menu {
+      display: none;
+      position: absolute; bottom: 80px; left: 50%;
+      transform: translateX(-50%);
+      padding: 12px 36px; font-size: 1rem; font-family: Georgia, serif;
+      background: linear-gradient(135deg, #c4a843, #8a6820);
+      color: #1a0e0a; border: none; border-radius: 8px;
+      cursor: pointer; letter-spacing: 2px; pointer-events: all;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Menu -->
+  <div id="menu-overlay">
+    <h1>⚜ Fantasy Poker ⚜</h1>
+    <p class="subtitle">Choose your class</p>
+    <div class="class-grid" id="class-grid"></div>
+    <button id="start-btn" disabled>ENTER THE TAVERN</button>
+  </div>
+
+  <!-- HUD (shown after game starts) -->
+  <div id="hud" style="display:none">
+    <div id="pot-display">Pot: 0</div>
+
+    <!-- Player panels -->
+    <div class="player-panel" id="player-panel-0">
+      <div class="p-class">🃏</div>
+      <div class="p-name">You</div>
+      <div class="p-chips">1500 chips</div>
+    </div>
+    <div class="player-panel" id="player-panel-1">
+      <div class="p-class">🃏</div>
+      <div class="p-name">Bot West</div>
+      <div class="p-chips">1500 chips</div>
+    </div>
+    <div class="player-panel" id="player-panel-2">
+      <div class="p-class">🃏</div>
+      <div class="p-name">Bot North</div>
+      <div class="p-chips">1500 chips</div>
+    </div>
+    <div class="player-panel" id="player-panel-3">
+      <div class="p-class">🃏</div>
+      <div class="p-name">Bot East</div>
+      <div class="p-chips">1500 chips</div>
+    </div>
+
+    <!-- Ability info (top right) -->
+    <div id="ability-info">
+      <div id="passive-name">Passive</div>
+      <div id="passive-desc">—</div>
+      <br/>
+      <div id="ultimate-desc">—</div>
+    </div>
+
+    <!-- Raise panel -->
+    <div id="raise-panel">
+      <button class="action-btn" id="btn-min">MIN</button>
+      <button class="action-btn" id="btn-pot">POT</button>
+      <button class="action-btn" id="btn-2pot">2× POT</button>
+      <button class="action-btn" id="btn-allin">ALL-IN</button>
+      <button class="action-btn danger" id="btn-cancel-raise">✕</button>
+    </div>
+
+    <!-- Action bar -->
+    <div id="action-bar">
+      <button class="action-btn danger" id="btn-fold" disabled>FOLD</button>
+      <button class="action-btn" id="btn-check" disabled>CHECK</button>
+      <button class="action-btn" id="btn-raise" disabled>RAISE ▲</button>
+    </div>
+
+    <!-- Ability button -->
+    <button id="btn-ability" disabled>⚡ Ultimate</button>
+
+    <!-- Message overlay -->
+    <div id="msg-overlay"></div>
+
+    <!-- Round flow buttons -->
+    <button id="btn-next-round">Next Round</button>
+    <button id="btn-menu">Back to Menu</button>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
