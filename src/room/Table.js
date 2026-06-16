@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { woodMaterial, brassMaterial, feltBumpTexture } from './Materials.js';
 
 // World-space heights (floor = y 0).
 export const TABLE_TOP_Y = 1.06;     // reference top
@@ -112,36 +113,6 @@ function drawCompass(ctx, cx, cy, R, gold, goldHi) {
   ctx.restore();
 }
 
-function woodTexture(repeat = 4) {
-  const S = 512;
-  const c = document.createElement('canvas'); c.width = c.height = S;
-  const ctx = c.getContext('2d');
-  // Base dark wood with panel-to-panel variation
-  ctx.fillStyle = '#3a1f10'; ctx.fillRect(0, 0, S, S);
-  for (let p = 0; p < 8; p++) {
-    ctx.fillStyle = `rgba(${70 + (Math.random() * 30) | 0},${42 + (Math.random() * 18) | 0},${20 + (Math.random() * 10) | 0},0.18)`;
-    ctx.fillRect((p / 8) * S, 0, S / 8, S);
-  }
-  // Grain
-  for (let i = 0; i < 60; i++) {
-    const x = (i / 60) * S + (Math.random() - 0.5) * 10;
-    ctx.strokeStyle = `rgba(${22 + (Math.random() * 16) | 0},${11 + (Math.random() * 8) | 0},${4 + (Math.random() * 4) | 0},0.6)`;
-    ctx.lineWidth = 0.8 + Math.random() * 2;
-    ctx.beginPath();
-    for (let y = 0; y <= S; y += 6) {
-      const xo = x + Math.sin(y * 0.05 + i) * 4;
-      y === 0 ? ctx.moveTo(xo, y) : ctx.lineTo(xo, y);
-    }
-    ctx.stroke();
-  }
-  // Edge highlight band
-  ctx.strokeStyle = 'rgba(139,87,40,0.5)'; ctx.lineWidth = 3;
-  ctx.strokeRect(2, 2, S - 4, S - 4);
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeat, 1);
-  return t;
-}
-
 function drawRoundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y);
@@ -158,12 +129,15 @@ function drawRoundRect(ctx, x, y, w, h, r) {
 export function createTable(scene) {
   const group = new THREE.Group();
 
-  const woodMat = new THREE.MeshStandardMaterial({ map: woodTexture(6), roughness: 0.74, metalness: 0.02 });
-  const woodDark = new THREE.MeshStandardMaterial({ color: 0x2a160a, roughness: 0.82 });
-  const woodSkirt = new THREE.MeshStandardMaterial({ map: woodTexture(10), color: 0x6a4020, roughness: 0.78 });
-  const brass = new THREE.MeshStandardMaterial({ color: 0xb8862e, metalness: 0.5, roughness: 0.42 });
-  const brassDark = new THREE.MeshStandardMaterial({ color: 0x7a551c, metalness: 0.45, roughness: 0.5 });
-  const feltMat = new THREE.MeshStandardMaterial({ map: feltTexture(), roughness: 0.95, metalness: 0.0 });
+  const woodMat = woodMaterial({ rx: 4, ry: 2 });
+  const woodDark = woodMaterial({ rx: 4, ry: 2, tint: 0x6e4a30, rough: 0.82 });
+  const woodSkirt = woodMaterial({ rx: 8, ry: 2, tint: 0xc69c6a });
+  const brass = brassMaterial();
+  const brassDark = brassMaterial({ dark: true });
+  const feltMat = new THREE.MeshStandardMaterial({
+    map: feltTexture(), bumpMap: feltBumpTexture(6, 6), bumpScale: 0.04,
+    roughness: 0.97, metalness: 0.0,
+  });
 
   // ── Contact shadow ──
   const shadow = new THREE.Mesh(

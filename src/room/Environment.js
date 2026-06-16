@@ -1,75 +1,13 @@
 import * as THREE from 'three';
 import { FELT_TOP_Y } from './Table.js';
+import { woodMaterial, brassMaterial, leatherMaterial, stoneMaterial } from './Materials.js';
 
 // ── Chairs / seats live on the floor (y 0). Figurines (controller) sit at radius 4.5. ──
 const CHAIR_R = 4.65;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Procedural textures
+// Procedural textures (wood / brass / leather / stone now live in Materials.js)
 // ─────────────────────────────────────────────────────────────────────────────
-
-function stoneTexture(repeat = 3) {
-  const S = 512;
-  const c = document.createElement('canvas'); c.width = c.height = S;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#6b7689'; ctx.fillRect(0, 0, S, S);
-  // Big stylized blocks
-  ctx.strokeStyle = '#454e5e'; ctx.lineWidth = 6;
-  const bh = 96;
-  for (let row = 0; row * bh < S; row++) {
-    const y = row * bh;
-    const off = row % 2 === 0 ? 0 : 80;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(S, y); ctx.stroke();
-    for (let x = off; x < S + 160; x += 160) {
-      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y + bh); ctx.stroke();
-    }
-  }
-  // Painterly tone variation + soft highlights
-  for (let i = 0; i < 1400; i++) {
-    const v = (Math.random() * 26 - 13) | 0;
-    ctx.fillStyle = `rgba(${107 + v},${118 + v},${137 + v},0.5)`;
-    ctx.fillRect(Math.random() * S, Math.random() * S, 5, 5);
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeat, repeat);
-  return t;
-}
-
-function stoneFloorTexture() {
-  const S = 512;
-  const c = document.createElement('canvas'); c.width = c.height = S;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#5c6678'; ctx.fillRect(0, 0, S, S);
-  ctx.strokeStyle = '#3c44535'; ctx.lineWidth = 5;
-  for (let i = 0; i <= S; i += 96) {
-    ctx.strokeStyle = '#3a414e';
-    ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, S); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(S, i); ctx.stroke();
-  }
-  for (let i = 0; i < 1800; i++) {
-    const v = (Math.random() * 22 - 11) | 0;
-    ctx.fillStyle = `rgba(${92 + v},${102 + v},${120 + v},0.5)`;
-    ctx.fillRect(Math.random() * S, Math.random() * S, 4, 4);
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(8, 8);
-  return t;
-}
-
-function woodTexture(repeat = 4) {
-  const S = 256;
-  const c = document.createElement('canvas'); c.width = c.height = S;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#4a2c12'; ctx.fillRect(0, 0, S, S);
-  for (let i = 0; i < 22; i++) {
-    const x = (i / 22) * S;
-    ctx.strokeStyle = `rgba(28,14,4,0.5)`; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x + 4, S); ctx.stroke();
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repeat, 1);
-  return t;
-}
 
 function rugTexture() {
   const S = 512;
@@ -132,9 +70,9 @@ function skyTexture() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function buildEnvironment(scene) {
-  const stoneMat = new THREE.MeshStandardMaterial({ map: stoneTexture(), roughness: 0.95 });
-  const woodMat = new THREE.MeshStandardMaterial({ map: woodTexture(), roughness: 0.8 });
-  const beamMat = new THREE.MeshStandardMaterial({ color: 0x3a2410, roughness: 0.85 });
+  const stoneMat = stoneMaterial({ rx: 2, ry: 2 });
+  const woodMat = woodMaterial({ rx: 3, ry: 1 });
+  const beamMat = woodMaterial({ rx: 6, ry: 1, tint: 0x7a563a, rough: 0.85 });
 
   buildSkyAndOcean(scene);
   buildFloor(scene, stoneMat);
@@ -236,8 +174,8 @@ function cloudTexture() {
 // ── Wall sconces, shelves, shield plaques ──
 function buildWallDetails(scene) {
   const iron = new THREE.MeshStandardMaterial({ color: 0x2a2a30, metalness: 0.6, roughness: 0.5 });
-  const wood = new THREE.MeshStandardMaterial({ color: 0x4a2c12, roughness: 0.82 });
-  const gold = new THREE.MeshStandardMaterial({ color: 0xc79a3a, metalness: 0.7, roughness: 0.3 });
+  const wood = woodMaterial({ rx: 1, ry: 2 });
+  const gold = brassMaterial();
   const flameMat = new THREE.MeshStandardMaterial({ color: 0xffd070, emissive: 0xff7a18, emissiveIntensity: 3, transparent: true, opacity: 0.92 });
 
   // Sconces on both side walls
@@ -295,7 +233,7 @@ function buildCastle(scene, x, z) {
 function buildFloor(scene, stoneMat) {
   const floor = new THREE.Mesh(
     new THREE.CircleGeometry(8.6, 64),
-    new THREE.MeshStandardMaterial({ map: stoneFloorTexture(), roughness: 0.95 }),
+    stoneMaterial({ rx: 6, ry: 6, tint: 0xb8c0cc }),
   );
   floor.rotation.x = -Math.PI / 2;
   floor.receiveShadow = true;
@@ -361,10 +299,10 @@ function buildBalcony(scene, stoneMat, woodMat) {
   // Balcony railing (wood) just inside the opening
   const railZ = Z + 0.6;
   const railTop = new THREE.Mesh(new THREE.BoxGeometry(6.8, 0.18, 0.3),
-    new THREE.MeshStandardMaterial({ map: woodTexture(3), roughness: 0.8 }));
+    woodMaterial({ rx: 6, ry: 1 }));
   railTop.position.set(0, 1.05, railZ); scene.add(railTop);
   const railBase = railTop.clone(); railBase.position.y = 0.15; scene.add(railBase);
-  const balusterMat = new THREE.MeshStandardMaterial({ color: 0x4a2c12, roughness: 0.8 });
+  const balusterMat = woodMaterial({ rx: 1, ry: 1, tint: 0x8a6444 });
   for (let i = -6; i <= 6; i++) {
     const b = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.9, 8), balusterMat);
     b.position.set(i * 0.52, 0.6, railZ); scene.add(b);
@@ -504,39 +442,6 @@ function buildBanners(scene) {
   }
 }
 
-// ── Tufted (diamond-quilted) leather texture for chair cushions ──
-const _tuftCache = {};
-function tuftedTexture(hex) {
-  if (_tuftCache[hex]) return _tuftCache[hex];
-  const S = 256;
-  const c = document.createElement('canvas'); c.width = c.height = S;
-  const ctx = c.getContext('2d');
-  const base = new THREE.Color(hex);
-  const hx = '#' + hex.toString(16).padStart(6, '0');
-  const dk = '#' + base.clone().multiplyScalar(0.55).getHexString();
-  const lt = '#' + base.clone().multiplyScalar(1.35).getHexString();
-  ctx.fillStyle = hx; ctx.fillRect(0, 0, S, S);
-  // Diamond quilting with soft shading per cell
-  const N = 4, step = S / N;
-  for (let r = -1; r <= N; r++) {
-    for (let q = -1; q <= N; q++) {
-      const ox = q * step + (r % 2 ? step / 2 : 0);
-      const oy = r * step;
-      const grd = ctx.createRadialGradient(ox + step / 2, oy + step / 2, 2, ox + step / 2, oy + step / 2, step * 0.7);
-      grd.addColorStop(0, lt); grd.addColorStop(0.6, hx); grd.addColorStop(1, dk);
-      ctx.fillStyle = grd;
-      ctx.beginPath();
-      ctx.moveTo(ox + step / 2, oy); ctx.lineTo(ox + step, oy + step / 2);
-      ctx.lineTo(ox + step / 2, oy + step); ctx.lineTo(ox, oy + step / 2); ctx.closePath(); ctx.fill();
-      // tuft button
-      ctx.fillStyle = '#c69a3a';
-      ctx.beginPath(); ctx.arc(ox + step / 2, oy + step / 2, 3.5, 0, Math.PI * 2); ctx.fill();
-    }
-  }
-  const t = new THREE.CanvasTexture(c);
-  _tuftCache[hex] = t; return t;
-}
-
 // Turned baluster front leg
 function turnedLeg(mat) {
   const profile = [
@@ -550,10 +455,10 @@ function turnedLeg(mat) {
 function makeChair(cushionColor, opts = {}) {
   const lowBack = opts.lowBack || false;
   const g = new THREE.Group();
-  const wood = new THREE.MeshStandardMaterial({ color: 0x3b1f10, roughness: 0.8 });
-  const woodHi = new THREE.MeshStandardMaterial({ color: 0x7a4a25, roughness: 0.78 });
-  const tuft = new THREE.MeshStandardMaterial({ map: tuftedTexture(cushionColor), roughness: 0.7 });
-  const brass = new THREE.MeshStandardMaterial({ color: 0xb8862e, metalness: 0.6, roughness: 0.4 });
+  const wood = woodMaterial({ rx: 1, ry: 2, tint: 0x8a6444 });
+  const woodHi = woodMaterial({ rx: 1, ry: 1, tint: 0xc8a274 });
+  const tuft = leatherMaterial(cushionColor);
+  const brass = brassMaterial();
 
   const backH = lowBack ? 1.15 : 1.55;       // backrest panel height
   const crestY = 0.78 + backH / 2 + 0.1;     // top of the panel
@@ -685,7 +590,7 @@ function makeChip(bodyHex, trimHex) {
   const top = new THREE.MeshStandardMaterial({ map: chipTopTexture(bodyHex, trimHex), roughness: 0.4, metalness: 0.12 });
   const side = new THREE.MeshStandardMaterial({ color: bodyHex, roughness: 0.45 });
   // CylinderGeometry material order: [side, top, bottom]
-  const chip = new THREE.Mesh(new THREE.CylinderGeometry(0.165, 0.165, 0.05, 24), [side, top, top]);
+  const chip = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.022, 24), [side, top, top]);
   return chip;
 }
 
@@ -695,10 +600,10 @@ function makeChipStack(bodyHex, trimHex, n) {
   let y = 0;
   for (let i = 0; i < n; i++) {
     const chip = makeChip(bodyHex, trimHex);
-    chip.position.set((Math.random() - 0.5) * 0.012, y + 0.025, (Math.random() - 0.5) * 0.012);
+    chip.position.set((Math.random() - 0.5) * 0.006, y + 0.011, (Math.random() - 0.5) * 0.006);
     chip.rotation.y = Math.random() * Math.PI * 2;
     chip.castShadow = true; g.add(chip);
-    y += 0.05;
+    y += 0.022;
   }
   return g;
 }
@@ -711,18 +616,18 @@ function buildChipStacks(scene) {
   ];
   const seatAngles = [Math.PI / 2, Math.PI, -Math.PI / 2, 0];
   seatAngles.forEach((a, i) => {
-    const r = 1.72;
+    const r = 1.7;
     const x = Math.cos(a) * r, z = Math.sin(a) * r;
     const counts = [5 + (Math.random() * 4 | 0), 10 + (Math.random() * 8 | 0)];
     // a small stack and a tall stack side by side, plus a contact shadow
     counts.forEach((n, k) => {
-      const off = k === 0 ? -0.3 : 0.3;
+      const off = k === 0 ? -0.14 : 0.14;
       const sx = x + Math.cos(a + Math.PI / 2) * off;
       const sz = z + Math.sin(a + Math.PI / 2) * off;
       const stack = makeChipStack(palettes[i][0], palettes[i][1], n);
       stack.position.set(sx, FELT_TOP_Y, sz);
       scene.add(stack);
-      const sh = new THREE.Mesh(new THREE.CircleGeometry(0.22, 16),
+      const sh = new THREE.Mesh(new THREE.CircleGeometry(0.1, 16),
         new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.22, depthWrite: false }));
       sh.rotation.x = -Math.PI / 2; sh.position.set(sx, FELT_TOP_Y + 0.002, sz); scene.add(sh);
     });
@@ -739,8 +644,8 @@ function buildProps(scene) {
 }
 
 function addBarrel(scene, x, z) {
-  const woodMat = new THREE.MeshStandardMaterial({ color: 0x4a2510, roughness: 0.85 });
-  const metalMat = new THREE.MeshStandardMaterial({ color: 0x5a5650, metalness: 0.6, roughness: 0.4 });
+  const woodMat = woodMaterial({ rx: 3, ry: 1, tint: 0x9a6e48 });
+  const metalMat = brassMaterial({ dark: true });
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 1.0, 14), woodMat);
   barrel.position.set(x, 0.5, z); barrel.castShadow = true; scene.add(barrel);
   for (const yo of [-0.28, 0, 0.28]) {
@@ -750,7 +655,7 @@ function addBarrel(scene, x, z) {
 }
 
 function addCrateStack(scene, x, z) {
-  const woodMat = new THREE.MeshStandardMaterial({ color: 0x5a3820, roughness: 0.88 });
+  const woodMat = woodMaterial({ rx: 2, ry: 2, tint: 0xa07a52 });
   for (const [ox, oy, oz, s] of [[0, 0.4, 0, 0.9], [0.15, 1.12, 0.1, 0.72]]) {
     const crate = new THREE.Mesh(new THREE.BoxGeometry(s, s, s), woodMat);
     crate.position.set(x + ox, oy, z + oz); crate.castShadow = true; scene.add(crate);
@@ -758,8 +663,8 @@ function addCrateStack(scene, x, z) {
 }
 
 function addChest(scene, x, z) {
-  const woodMat = new THREE.MeshStandardMaterial({ color: 0x3a1e08, roughness: 0.85 });
-  const goldMat = new THREE.MeshStandardMaterial({ color: 0xc79a3a, metalness: 0.8, roughness: 0.25 });
+  const woodMat = woodMaterial({ rx: 2, ry: 1, tint: 0x7a5232 });
+  const goldMat = brassMaterial();
   const base = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.7, 0.9), woodMat);
   base.position.set(x, 0.35, z); base.castShadow = true; scene.add(base);
   const lid = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.34, 0.9), woodMat);

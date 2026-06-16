@@ -3,3 +3,8 @@ dist/
 .vite/
 *.log
 .DS_Store
+
+# Large raw assets — only the compressed char_*.glb / table.glb are committed
+public/assets/_orig/
+public/assets/Meshy_AI_assets_*/
+public/assets/Meshy_AI_*.glb

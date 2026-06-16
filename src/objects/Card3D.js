@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-const CW = 0.72, CH = 1.02, CD = 0.018;
+const CW = 0.46, CH = 0.64, CD = 0.016;
 
 let _backTex = null;
 function getBackTexture() {
@@ -181,7 +181,7 @@ export class Card3D {
   }
 
   destroy() {
-    this.scene.remove(this.mesh);
+    this.mesh.removeFromParent();   // works whether parented to scene or camera
     this.mesh.geometry.dispose();
   }
 }

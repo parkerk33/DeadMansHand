@@ -1,4 +1,21 @@
 import * as THREE from 'three';
+import { clothMaterial } from '../room/Materials.js';
+import { tryLoadAsset } from './AssetLoader.js';
+
+// Per-class AI character models (in public/assets). Missing files fall back to
+// the procedural bust, so the game still runs without them.
+const CHARACTER_GLB = {
+  Jester: '/assets/char_jester.glb',
+  Noble: '/assets/char_noble.glb',
+  Sorcerer: '/assets/char_sorcerer.glb',
+  Assassin: '/assets/char_assassin.glb',
+  Knight: '/assets/char_knight.glb',
+  Summoner: '/assets/char_summoner.glb',
+  Ranger: '/assets/char_ranger.glb',
+  Alchemist: '/assets/char_alchemist.glb',
+};
+const MODEL_TARGET_H = 2.0;       // world height to scale each character to
+const MODEL_FACING_OFFSET = 0;    // flip to Math.PI if models face away from center
 
 // ── Shared little "held cards" texture (navy back with gold edge) ──
 let _heldTex = null;
@@ -47,8 +64,8 @@ function roundRect(ctx, x, y, w, h, r) {
 // Seated upper-body figure, themed per class. Local +z faces the table center.
 function buildBust(cls) {
   const g = new THREE.Group();
-  const robe = new THREE.MeshStandardMaterial({ color: cls.color, roughness: 0.6, metalness: 0.12 });
-  const robeDark = new THREE.MeshStandardMaterial({ color: new THREE.Color(cls.color).multiplyScalar(0.6), roughness: 0.7 });
+  const robe = clothMaterial(cls.color);
+  const robeDark = clothMaterial(new THREE.Color(cls.color).multiplyScalar(0.6).getHex());
   const skinTone = cls.name === 'Summoner' ? 0xe0c0a0 : 0xe8c9a0;
   const skin = new THREE.MeshStandardMaterial({ color: skinTone, roughness: 0.55 });
   const gold = new THREE.MeshStandardMaterial({ color: 0xc79a3a, metalness: 0.7, roughness: 0.3 });
@@ -195,13 +212,41 @@ export class Character3D {
     this.group.position.copy(position);
     scene.add(this.group);
 
-    // Seated figure, turned to face the table center
+    // Procedural bust shows immediately; the AI model swaps in once loaded.
     this.body = buildBust(cls);
     this.body.rotation.y = Math.atan2(-position.x, -position.z);
     this.group.add(this.body);
+    this.figure = this.body;
 
     // Floating name plaque (billboards to camera)
     this._buildPortrait();
+
+    this._loadModel();
+  }
+
+  async _loadModel() {
+    const url = CHARACTER_GLB[this.cls.name];
+    if (!url) return;
+    const model = await tryLoadAsset(url, { reskin: false });
+    if (!model || !this.group.parent) return;   // missing file or destroyed meanwhile
+
+    // Scale to a consistent height and stand its feet on the floor, facing center.
+    const box = new THREE.Box3().setFromObject(model);
+    const size = box.getSize(new THREE.Vector3());
+    model.scale.setScalar(MODEL_TARGET_H / (size.y || 1));
+    model.updateMatrixWorld(true);
+    const b2 = new THREE.Box3().setFromObject(model);
+    const c = b2.getCenter(new THREE.Vector3());
+    model.position.x -= c.x;
+    model.position.z -= c.z;
+    model.position.y -= b2.min.y;
+    model.rotation.y = Math.atan2(-this.group.position.x, -this.group.position.z) + MODEL_FACING_OFFSET;
+
+    this.group.remove(this.body);
+    this.group.add(model);
+    this.model = model;
+    this.figure = model;
+    if (this._folded) this.setFolded(true);   // preserve fold state if it changed mid-load
   }
 
   _buildPortrait() {
@@ -217,15 +262,15 @@ export class Character3D {
   }
 
   setActive(on) {
-    this.body.traverse(child => {
-      if (child.isMesh && child.material && 'emissive' in child.material && !child.material.map) {
+    this.figure.traverse(child => {
+      if (child.isMesh && child.material && 'emissive' in child.material) {
         if (!child.userData._baseEmissive) {
           child.userData._baseEmissive = child.material.emissive.clone();
           child.userData._baseEmissiveI = child.material.emissiveIntensity || 0;
         }
         if (on) {
           child.material.emissive = new THREE.Color(0xffcf5a);
-          child.material.emissiveIntensity = 0.35;
+          child.material.emissiveIntensity = 0.28;
         } else {
           child.material.emissive.copy(child.userData._baseEmissive);
           child.material.emissiveIntensity = child.userData._baseEmissiveI;
@@ -235,7 +280,8 @@ export class Character3D {
   }
 
   setFolded(on) {
-    this.body.traverse(child => {
+    this._folded = on;
+    this.figure.traverse(child => {
       if (child.isMesh) {
         child.material.transparent = on;
         child.material.opacity = on ? 0.32 : 1.0;

@@ -22,8 +22,16 @@ export class Tweener {
 
   update(deltaMs) {
     const delta = Math.min(deltaMs / 1000, 0.05); // cap at 50ms
-    this._tweens = this._tweens.filter(t => {
-      if (t.done) return false;
+
+    // Take the current batch and reset the live list. onComplete callbacks often
+    // chain a NEW tween (e.g. card lift -> drop); those pushes land in the fresh
+    // this._tweens and must survive, so we re-append survivors afterwards.
+    const batch = this._tweens;
+    this._tweens = [];
+    const survivors = [];
+
+    for (const t of batch) {
+      if (t.done) continue;
       t.elapsed += delta;
       const progress = Math.min(t.elapsed / t.duration, 1);
       const ease = (EASINGS[t.easing] || easeOutCubic)(progress);
@@ -41,11 +49,14 @@ export class Tweener {
 
       if (progress >= 1) {
         t.done = true;
-        t.onComplete?.();
-        return false;
+        t.onComplete?.();      // may push a chained tween into this._tweens
+      } else {
+        survivors.push(t);
       }
-      return true;
-    });
+    }
+
+    // Keep still-running tweens plus any chained ones added during this tick.
+    if (survivors.length) this._tweens = survivors.concat(this._tweens);
   }
 
   clear() { this._tweens = []; }

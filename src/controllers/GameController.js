@@ -3,10 +3,18 @@ import { PokerGame } from '../game/PokerGame.js';
 import { botDecide } from '../game/BotPlayer.js';
 import { Card3D, CARD_DECK_POS } from '../objects/Card3D.js';
 import { Character3D } from '../objects/Character3D.js';
+import { BettingRound, settlePots } from '../game/BettingEngine.js';
 import { setupLighting, animateLights } from '../room/Lighting.js';
 import { createTable, FELT_TOP_Y } from '../room/Table.js';
 import { buildEnvironment } from '../room/Environment.js';
+import { tryLoadAsset } from '../objects/AssetLoader.js';
 import { Tweener } from '../utils/Tweener.js';
+
+// Custom GLB props (drop files in public/assets/). Missing files fall back to
+// the procedural meshes. Override scale here once you've eyeballed it.
+const CUSTOM_TABLE_URL = '/assets/table.glb';
+const TABLE_TARGET_DIAMETER = 6.4;   // fit the model across the play area
+const TABLE_MAX_HEIGHT = 1.7;        // don't let a tall model tower over the felt
 
 // Height at which cards rest on the felt.
 const CARD_Y = FELT_TOP_Y + 0.015;
@@ -29,11 +37,11 @@ const HOLE_POSITIONS = [
 ];
 
 const COMMUNITY_POSITIONS = [
-  new THREE.Vector3(-1.32, CARD_Y, -0.15),
-  new THREE.Vector3(-0.66, CARD_Y, -0.15),
+  new THREE.Vector3(-1.04, CARD_Y, -0.15),
+  new THREE.Vector3(-0.52, CARD_Y, -0.15),
   new THREE.Vector3(0, CARD_Y, -0.15),
-  new THREE.Vector3(0.66, CARD_Y, -0.15),
-  new THREE.Vector3(1.32, CARD_Y, -0.15),
+  new THREE.Vector3(0.52, CARD_Y, -0.15),
+  new THREE.Vector3(1.04, CARD_Y, -0.15),
 ];
 
 // Where each player's hole card lands on the felt.
@@ -41,7 +49,19 @@ function holePos(player, cardIndex) {
   return HOLE_POSITIONS[player][cardIndex].clone();
 }
 
-const BOT_DELAY = 900;
+// First-person held hand: the human's hole cards are parented to the CAMERA and
+// positioned in camera-local space, so they stay in hand as you look around.
+// (-z is forward/away; -y is down; the cards face back toward the eye.)
+const HELD_LOCAL = new THREE.Vector3(0, -0.42, -1.15);
+const HELD_SCALE = 0.72;
+const HELD_SPREAD = 0.34;   // horizontal gap between cards
+const HELD_TILT_X = -0.35;  // tilt the faces up toward the eye
+const HELD_FAN = 0.2;       // per-card fan rotation
+
+// Turn timing (seconds)
+const TURN_TIME = 20;        // the human's clock; auto-check/fold on timeout
+const BOT_THINK_MIN = 1.3;   // bots act somewhere in this window
+const BOT_THINK_MAX = 4.0;
 
 export class GameController {
   constructor(renderer, scene, camera, classes) {
@@ -76,8 +96,36 @@ export class GameController {
 
   _buildRoom() {
     this.lights = setupLighting(this.scene);
-    createTable(this.scene);
+    this.tableGroup = createTable(this.scene);
     buildEnvironment(this.scene);
+    this._loadCustomTable();
+  }
+
+  // Try to swap the procedural table for a Blender/AI .glb, auto-fitted to the
+  // play area. Falls back silently to the procedural table if the file is absent.
+  async _loadCustomTable() {
+    const obj = await tryLoadAsset(CUSTOM_TABLE_URL, { reskin: false });
+    if (!obj) return;
+
+    // Fit: scale to span the play area, but cap height so it can't tower.
+    let box = new THREE.Box3().setFromObject(obj);
+    const size = box.getSize(new THREE.Vector3());
+    const maxXZ = Math.max(size.x, size.z) || 1;
+    const scale = Math.min(TABLE_TARGET_DIAMETER / maxXZ, TABLE_MAX_HEIGHT / (size.y || 1));
+    obj.scale.setScalar(scale);
+
+    // Re-measure, then centre on X/Z and align the TOP to the felt height so
+    // cards/chips still sit on the surface.
+    obj.updateMatrixWorld(true);
+    box = new THREE.Box3().setFromObject(obj);
+    const c = box.getCenter(new THREE.Vector3());
+    obj.position.x += -c.x;
+    obj.position.z += -c.z;
+    obj.position.y += FELT_TOP_Y - box.max.y;
+
+    this.scene.add(obj);
+    this.customTable = obj;
+    if (this.tableGroup) this.tableGroup.visible = false;  // hide procedural one
   }
 
   // ── UI helpers ─────────────────────────────────────────────────────────────
@@ -87,7 +135,7 @@ export class GameController {
     // Wire up action buttons.
     const $ = id => document.getElementById(id);
     $('btn-fold').addEventListener('click', () => this._humanAction('fold'));
-    $('btn-check').addEventListener('click', () => this._humanAction('check'));
+    $('btn-check').addEventListener('click', () => this._humanCheckCall());
     $('btn-raise').addEventListener('click', () => this._showRaisePanel());
     $('btn-ability').addEventListener('click', () => this._useAbility());
 
@@ -138,7 +186,7 @@ export class GameController {
   _updateAbilityButton() {
     const cls = this.selectedClasses[0];
     const btn = document.getElementById('btn-ability');
-    btn.textContent = `${cls.emoji} ${cls.ultimate.name}`;
+    btn.innerHTML = `${cls.emoji} ${cls.ultimate.name} <kbd>E</kbd>`;
     btn.disabled = this.abilityUsed.ultimate;
     document.getElementById('passive-name').textContent = `Passive: ${cls.passive.name}`;
     document.getElementById('passive-desc').textContent = cls.passive.description;
@@ -222,22 +270,55 @@ export class GameController {
 
   _dealHoleCards() {
     this.game.dealHoleCards();
+
+    // Only the bots' cards animate onto the felt; the human's cards go into the
+    // first-person held fan. The deal-complete counter tracks the bot cards.
     let animCount = 0;
-    const total = this.game.activePlayers.length * 2;
-    const onDone = () => { animCount++; if (animCount === total) this._onHoleCardsDealt(); };
+    const botCards = this.game.activePlayers.filter((p) => !p.isHuman).length * 2;
+    const onDone = () => { animCount++; if (animCount >= botCards) this._onHoleCardsDealt(); };
 
     for (let i = 0; i < 4; i++) {
       const p = this.game.players[i];
       if (!p.active) continue;
       for (let j = 0; j < 2; j++) {
-        const isHuman = i === 0;
-        const card = new Card3D(this.scene, p.holeCards[j], !isHuman);
-        card.setPosition(CARD_DECK_POS.x, CARD_DECK_POS.y, CARD_DECK_POS.z);
-        const dest = holePos(i, j);
-        card.moveTo(this.tweener, dest, (i * 2 + j) * 150, 0.4, onDone);
-        this.holeCard3Ds[i].push(card);
+        if (p.isHuman) {
+          // Face-up card, placed into the held fan (no felt animation).
+          const card = new Card3D(this.scene, p.holeCards[j], false);
+          this.holeCard3Ds[i].push(card);
+        } else {
+          const card = new Card3D(this.scene, p.holeCards[j], true);
+          card.setPosition(CARD_DECK_POS.x, CARD_DECK_POS.y, CARD_DECK_POS.z);
+          card.moveTo(this.tweener, holePos(i, j), (i * 2 + j) * 150, 0.4, onDone);
+          this.holeCard3Ds[i].push(card);
+        }
       }
     }
+
+    this._layoutHeldHand();
+    if (botCards === 0) this._onHoleCardsDealt();
+  }
+
+  // Position the human's hole cards as a fanned hand parented to the camera so
+  // they stay in view while the player looks around (mouse-look).
+  _layoutHeldHand() {
+    const cards = this.holeCard3Ds[0].filter(Boolean);
+    const n = cards.length;
+    cards.forEach((c, i) => {
+      if (c.mesh.parent !== this.camera) {
+        c.mesh.removeFromParent();
+        this.camera.add(c.mesh);
+      }
+      const t = n > 1 ? i - (n - 1) / 2 : 0;   // e.g. -0.5, +0.5 for two cards
+      c.mesh.scale.setScalar(HELD_SCALE);
+      c.mesh.position.set(
+        HELD_LOCAL.x + t * HELD_SPREAD,
+        HELD_LOCAL.y - Math.abs(t) * 0.05,
+        HELD_LOCAL.z,
+      );
+      c.mesh.rotation.set(HELD_TILT_X, 0, -t * HELD_FAN);
+      c.mesh.castShadow = false;
+      c.faceDown = false;
+    });
   }
 
   _onHoleCardsDealt() {
@@ -250,6 +331,7 @@ export class GameController {
       const pos = holePos(0, 0);
       wildCard.setPosition(pos.x, pos.y, pos.z);
       this.holeCard3Ds[0][0] = wildCard;
+      this._layoutHeldHand();
       this._showMsg('Familiar Bond: first hole card is wild! ✨', 2500);
     }
 
@@ -280,77 +362,81 @@ export class GameController {
   }
 
   _startBettingRound(phase) {
-    this.game.currentBet = phase === 'preflop' ? this.game.bigBlind : 0;
     const startIdx = phase === 'preflop'
       ? this.game.nextActiveIndex(this.game.bigBlindIndex)
       : this.game.nextActiveIndex(this.game.dealerIndex);
 
-    this.bState = {
-      phase,
-      currentBet: this.game.currentBet,
-      roundBets: this.game.players.map(p => phase === 'preflop' && !p.folded && p.active
-        ? (p.index === this.game.smallBlindIndex ? this.game.smallBlind : p.index === this.game.bigBlindIndex ? this.game.bigBlind : 0)
-        : 0),
-      actedThisRound: new Set(),
-      lastAggressorIdx: phase === 'preflop' ? this.game.bigBlindIndex : -1,
-      currentIdx: startIdx,
+    this.round = new BettingRound(this.game, phase, startIdx, {
+      bigBlind: this.game.bigBlind,
       noRaise: this.nobleDecreeActive || false,
-    };
+      marked: this.markedTarget >= 0 ? [this.markedTarget] : [],
+    });
+    this.bState = this.round;          // alias so ability code can read currentBet/noRaise/etc.
 
     this._updatePlayerPanels();
     this._advanceBetting();
   }
 
   _advanceBetting() {
-    const alive = this.game.inHandPlayers;
-    if (alive.length <= 1) { this._endRound(); return; }
+    const idx = this.round.actor();
+    if (idx < 0) { this._clearTurn(); this._onBettingRoundEnd(); return; }
 
-    // Check if betting is over
-    const allActed = alive.every(p => {
-      if (p.allIn) return true;
-      if (!this.bState.actedThisRound.has(p.index)) return false;
-      return (this.bState.roundBets[p.index] || 0) >= this.bState.currentBet;
-    });
-
-    if (allActed && this.bState.actedThisRound.size >= alive.filter(p => !p.allIn).length) {
-      this._onBettingRoundEnd(); return;
-    }
-
-    // Find next player who needs to act
-    let idx = this.bState.currentIdx;
-    for (let i = 0; i < 4; i++) {
-      const p = this.game.players[idx];
-      if (p.active && !p.folded && !p.allIn) {
-        const alreadyMatched = (this.bState.roundBets[idx] || 0) >= this.bState.currentBet;
-        if (!alreadyMatched || !this.bState.actedThisRound.has(idx)) {
-          break;
-        }
-      }
-      idx = (idx + 1) % 4;
-    }
-
-    this.bState.currentIdx = idx;
+    this.round.currentIdx = idx;        // point the highlight at the actor
     this._updatePlayerPanels();
 
     const p = this.game.players[idx];
-    if (!p.active || p.folded || p.allIn) {
-      this.bState.currentIdx = (idx + 1) % 4;
-      this._advanceBetting(); return;
-    }
-
     if (p.isHuman) {
       this._promptHumanAction();
+      this._startTurn(idx, TURN_TIME);
     } else {
-      setTimeout(() => this._doBotAction(idx), BOT_DELAY);
+      // Bots "think" for a short randomized time; they act when it elapses.
+      const think = BOT_THINK_MIN + Math.random() * (BOT_THINK_MAX - BOT_THINK_MIN);
+      this._startTurn(idx, think);
+    }
+  }
+
+  // ── Turn timer ──────────────────────────────────────────────────────────────
+
+  _startTurn(idx, limit) {
+    this._clearTurnTimeout();
+    this.turn = { idx, start: performance.now(), limit };
+    this._turnTimeout = setTimeout(() => this._onTurnExpire(idx), limit * 1000);
+  }
+
+  _onTurnExpire(idx) {
+    if (!this.turn || this.turn.idx !== idx || !this.round || this.round.complete) return;
+    this.turn = null;
+    if (this.game.players[idx].isHuman) {
+      const legal = this.round.legalActions(0);
+      this._setActionButtons(false);
+      this._hideRaisePanel();
+      this._showMsg(legal.canCheck ? "Time's up — auto-check." : "Time's up — auto-fold.", 1500);
+      this._applyAction(0, legal.canCheck ? 'check' : 'fold');
+    } else {
+      this._doBotAction(idx);
+    }
+  }
+
+  _clearTurnTimeout() {
+    if (this._turnTimeout) { clearTimeout(this._turnTimeout); this._turnTimeout = null; }
+  }
+
+  _clearTurn() {
+    this._clearTurnTimeout();
+    this.turn = null;
+    // Reset every panel's timer bar.
+    for (let i = 0; i < 4; i++) {
+      const fill = document.querySelector(`#player-panel-${i} .p-timer > i`);
+      if (fill) fill.style.width = '0%';
     }
   }
 
   _promptHumanAction() {
-    const toCall = this.bState.currentBet - (this.bState.roundBets[0] || 0);
-    const canCheck = toCall === 0;
-    document.getElementById('btn-check').textContent = canCheck ? 'CHECK' : `CALL ${toCall}`;
-    document.getElementById('btn-raise').disabled = this.bState.noRaise;
+    const legal = this.round.legalActions(0);
+    document.getElementById('btn-check').innerHTML =
+      (legal.canCheck ? 'CHECK' : `CALL ${legal.toCall}`) + ' <kbd>Spc</kbd>';
     this._setActionButtons(true);
+    document.getElementById('btn-raise').disabled = !legal.canRaise;
     this._updateAbilityButton();
     this._showMsg('Your turn!', 0);
   }
@@ -361,20 +447,25 @@ export class GameController {
     this._applyAction(0, action, 0);
   }
 
+  // The single CHECK/CALL button: check when nothing is owed, otherwise call.
+  _humanCheckCall() {
+    const legal = this.round.legalActions(0);
+    this._humanAction(legal.canCheck ? 'check' : 'call');
+  }
+
   _humanRaise(preset) {
     this._hideRaisePanel();
-    const p = this.game.players[0];
-    const toCall = this.bState.currentBet - (this.bState.roundBets[0] || 0);
-    let amount;
+    const legal = this.round.legalActions(0);
     const pot = this.game.pot;
-    const minRaise = this.game.bigBlind;
+    let amount;
     switch (preset) {
-      case 'min':  amount = toCall + Math.max(minRaise, this.bState.currentBet); break;
-      case 'pot':  amount = toCall + pot; break;
-      case '2pot': amount = toCall + pot * 2; break;
-      case 'allin': amount = p.chips; break;
+      case 'min':  amount = legal.minRaiseCommit; break;
+      case 'pot':  amount = legal.toCall + pot; break;
+      case '2pot': amount = legal.toCall + pot * 2; break;
+      case 'allin': amount = legal.allInCommit; break;
     }
-    amount = Math.min(amount, p.chips);
+    // Keep within [min legal raise, all-in].
+    amount = Math.max(legal.minRaiseCommit, Math.min(amount, legal.allInCommit));
     this._setActionButtons(false);
     this._hideMsg();
     this._applyAction(0, 'raise', amount);
@@ -382,58 +473,44 @@ export class GameController {
 
   _doBotAction(idx) {
     const p = this.game.players[idx];
-    const bsCopy = { ...this.bState };
-
-    // Assassin mark: chip leader can't raise
-    if (this.markedTarget === idx) bsCopy.noRaise = true;
-
+    const legal = this.round.legalActions(idx);
     const { action, raiseAmount } = botDecide(p, this.game.communityCards, {
-      currentBet: bsCopy.currentBet,
-      roundBets: bsCopy.roundBets,
+      currentBet: this.round.currentBet,
+      roundBets: this.round.roundBets,
       pot: this.game.pot,
-      noRaise: bsCopy.noRaise,
+      noRaise: !legal.canRaise,
     }, this.game.bigBlind);
 
-    // If marked and would raise, downgrade to call
-    const finalAction = (this.markedTarget === idx && action === 'raise') ? 'call' : action;
-    const finalAmount = finalAction === 'raise' ? (raiseAmount || this.game.bigBlind) : 0;
-
-    this._applyAction(idx, finalAction, finalAmount);
+    let act = action, amount = 0;
+    if (act === 'raise' && !legal.canRaise) act = legal.canCheck ? 'check' : 'call';
+    if (act === 'check' && !legal.canCheck) act = 'call';
+    if (act === 'call' && !legal.canCall) act = 'check';
+    if (act === 'raise') {
+      amount = Math.max(legal.minRaiseCommit, Math.min(raiseAmount || legal.minRaiseCommit, legal.allInCommit));
+    }
+    this._applyAction(idx, act, amount);
   }
 
-  _applyAction(idx, action, raiseAmount) {
+  _applyAction(idx, action, amount) {
+    this._clearTurnTimeout();           // an action was taken; stop this turn's clock
+    this.turn = null;
     const p = this.game.players[idx];
-    const toCall = this.bState.currentBet - (this.bState.roundBets[idx] || 0);
+    const res = this.round.apply(idx, action, amount);
     let msg = '';
 
     if (action === 'fold') {
-      this.game.playerFold(idx);
       this.characters[idx]?.setFolded(true);
-      // Fold hole cards face-down visually
       for (const c of this.holeCard3Ds[idx]) c?.setFaceDown();
       msg = `${p.name} folds.`;
     } else if (action === 'check') {
       msg = `${p.name} checks.`;
-    } else if (action === 'call') {
-      const called = this.game.playerBet(idx, toCall);
-      this.bState.roundBets[idx] = (this.bState.roundBets[idx] || 0) + called;
-      msg = `${p.name} calls ${called}.`;
-      this._updatePot();
-    } else if (action === 'raise') {
-      const newTotal = this.bState.currentBet + raiseAmount;
-      const more = newTotal - (this.bState.roundBets[idx] || 0);
-      const actual = this.game.playerBet(idx, more);
-      this.bState.roundBets[idx] = (this.bState.roundBets[idx] || 0) + actual;
-      this.bState.currentBet = this.bState.roundBets[idx];
-      this.bState.lastAggressorIdx = idx;
-      // Others who already acted need to re-act
-      this.bState.actedThisRound = new Set([idx]);
-      msg = `${p.name} raises to ${this.bState.currentBet}.`;
-      this._updatePot();
+    } else if (res.kind === 'raise') {
+      msg = `${p.name} raises to ${res.currentBet}.`;
+    } else {
+      msg = `${p.name} calls ${res.committed}.`;
     }
 
-    this.bState.actedThisRound.add(idx);
-    this.bState.currentIdx = (idx + 1) % 4;
+    this._updatePot();
     this._updatePlayerPanels();
     if (msg) this._showMsg(msg, 1800);
 
@@ -448,6 +525,7 @@ export class GameController {
 
     this.nobleDecreeActive = false;
     this.knightCharge = false;
+    this.markedTarget = -1;            // Assassin's mark only lasts the round
 
     if (phase === 'preflop') {
       setTimeout(() => this._dealFlop(), 1000);
@@ -522,24 +600,26 @@ export class GameController {
       for (const c of this.holeCard3Ds[i]) c?.reveal(this.tweener, null);
     }
 
-    const winners = this.game.determineWinners();
-    let bonus = 1.0;
+    // Correct side-pot settlement (handles all-ins).
+    const result = settlePots(this.game, this.game.communityCards);
 
-    // Noble passive
-    if (winners.some(w => w.player.index === 0) && this.selectedClasses[0].name === 'Noble') {
-      bonus = 1.15;
-      this.game.pot = Math.floor(this.game.pot * bonus);
-      this._showMsg(`Tax Collection! Pot boosted to ${this.game.pot}!`, 2500);
+    // How much the human won this hand (for class bonuses).
+    let humanWon = 0;
+    for (const pot of result.pots) {
+      if (pot.winners.includes(0)) humanWon += Math.floor(pot.amount / pot.winners.length);
+    }
+    const cls = this.selectedClasses[0].name;
+    const human = this.game.players[0];
+    if (humanWon > 0 && cls === 'Noble') {
+      const bonus = Math.floor(humanWon * 0.15);
+      human.chips += bonus;
+      this._showMsg(`Tax Collection! +${bonus} bonus chips! 👑`, 2500);
+    }
+    if (humanWon > 0 && cls === 'Assassin' && this.assassinBonus) {
+      human.chips += Math.floor(humanWon * 0.25);
     }
 
-    // Assassin passive: if you're last standing with no showdown
-    if (this.selectedClasses[0].name === 'Assassin' && this.assassinBonus) {
-      this.game.pot = Math.floor(this.game.pot * 1.25);
-    }
-
-    this.game.distributePot(winners);
-
-    const winNames = winners.map(w => `${w.player.name} (${w.handName || 'wins'})`).join(', ');
+    const winNames = result.summary || 'No one';
     this._showMsg(`🏆 ${winNames} wins!`, 0);
     this._updatePlayerPanels();
     this._updatePot();
@@ -579,6 +659,8 @@ export class GameController {
 
   _useAbility() {
     if (this.abilityUsed.ultimate) return;
+    this._clearTurnTimeout();    // using your ultimate pauses the auto-fold clock
+    this.turn = null;
     const cls = this.selectedClasses[0];
     switch (cls.name) {
       case 'Jester':    this._doJesterUltimate(); break;
@@ -609,12 +691,9 @@ export class GameController {
       const newCard = this.game.deck.deal();
       if (!newCard) { this._startBettingRound('preflop'); return; }
       this.game.players[0].holeCards[idx] = newCard;
-      const pos = holePos(0, idx);
       hit.destroy();
-      const c3d = new Card3D(this.scene, newCard, false);
-      c3d.setPosition(CARD_DECK_POS.x, CARD_DECK_POS.y, CARD_DECK_POS.z);
-      c3d.moveTo(this.tweener, pos, 0, 0.4, null);
-      this.holeCard3Ds[0][idx] = c3d;
+      this.holeCard3Ds[0][idx] = new Card3D(this.scene, newCard, false);
+      this._layoutHeldHand();
       this._showMsg('Card swapped!', 1800);
       setTimeout(() => this._startBettingRound('preflop'), 2000);
     };
@@ -733,12 +812,10 @@ export class GameController {
         this.game.players[0].holeCards[hi] = this.game.communityCards[ci];
         this.game.communityCards[ci] = tmp;
 
-        // Rebuild 3D cards
-        const hPos = holePos(0, hi);
+        // Rebuild 3D cards: hole card returns to the held fan, board card to felt
         this.holeCard3Ds[0][hi]?.destroy();
-        const hCard = new Card3D(this.scene, this.game.players[0].holeCards[hi], false);
-        hCard.setPosition(hPos.x, hPos.y, hPos.z);
-        this.holeCard3Ds[0][hi] = hCard;
+        this.holeCard3Ds[0][hi] = new Card3D(this.scene, this.game.players[0].holeCards[hi], false);
+        this._layoutHeldHand();
 
         this.communityCard3Ds[ci]?.destroy();
         const cCard = new Card3D(this.scene, this.game.communityCards[ci], false);
@@ -766,7 +843,7 @@ export class GameController {
     }
     if (!leader) { this._showMsg('No valid target!', 2000); return; }
     this.markedTarget = leader.index;
-    if (this.bState) this.bState.noRaise = true; // immediate effect
+    if (this.round) this.round.marked.add(leader.index);   // they may no longer raise
     this.abilityUsed.ultimate = true;
     this._showMsg(`Mark Target! ${leader.name} cannot raise this round! 🗡️`, 2500);
     this._updateAbilityButton();
@@ -775,19 +852,19 @@ export class GameController {
   // ── KNIGHT ──────────────────────────────────────────────────────────────────
 
   _doKnightUltimate() {
+    // Only usable on the human's own betting turn.
+    if (!this.round || this.round.actor() !== 0) {
+      this._showMsg('Charge can only be used on your betting turn!', 2000); return;
+    }
     const minBet = Math.max(this.game.bigBlind * 2, this.game.pot * 2);
-    // Force raise: others must match or fold
-    if (!this.bState) return;
+    const commit = Math.max(0, minBet - (this.round.roundBets[0] || 0));
+    this._setActionButtons(false);
+    this.round.apply(0, 'raise', commit);
     this.knightCharge = true;
-    const actual = this.game.playerBet(0, minBet - (this.bState.roundBets[0] || 0));
-    this.bState.roundBets[0] = (this.bState.roundBets[0] || 0) + actual;
-    this.bState.currentBet = this.bState.roundBets[0];
-    this.bState.actedThisRound = new Set([0]);
-    this.bState.lastAggressorIdx = 0;
-    this.bState.currentIdx = 1;
     this.abilityUsed.ultimate = true;
     this._updatePot();
-    this._showMsg(`Charge! Minimum bet is now ${minBet}! ⚔️`, 2000);
+    this._updatePlayerPanels();
+    this._showMsg(`Charge! Bet forced up to ${this.round.currentBet}! ⚔️`, 2000);
     this._updateAbilityButton();
     setTimeout(() => this._advanceBetting(), 2200);
   }
@@ -893,12 +970,10 @@ export class GameController {
     const currentSuit = card.suit;
     const nextSuit = suits[(suits.indexOf(currentSuit) + 1) % 4];
     card.suit = nextSuit;
-    // Rebuild the 3D card
-    const pos = holePos(0, hi);
+    // Rebuild the 3D card back into the held fan
     this.holeCard3Ds[0][hi]?.destroy();
-    const c3d = new Card3D(this.scene, card, false);
-    c3d.setPosition(pos.x, pos.y, pos.z);
-    this.holeCard3Ds[0][hi] = c3d;
+    this.holeCard3Ds[0][hi] = new Card3D(this.scene, card, false);
+    this._layoutHeldHand();
     this.alchemistStoneUsed = true;
     this.abilityUsed.passive = true;
     this._hideMsg();
@@ -979,6 +1054,17 @@ export class GameController {
     if (this.bState && this.game) {
       for (let i = 0; i < 4; i++) {
         this.characters[i]?.setActive(this.bState.currentIdx === i);
+      }
+    }
+
+    // Turn-timer bar on the active player's panel
+    if (this.turn) {
+      const rem = Math.max(0, this.turn.limit - (performance.now() - this.turn.start) / 1000);
+      const frac = this.turn.limit > 0 ? rem / this.turn.limit : 0;
+      const fill = document.querySelector(`#player-panel-${this.turn.idx} .p-timer > i`);
+      if (fill) {
+        fill.style.width = (frac * 100).toFixed(1) + '%';
+        fill.classList.toggle('low', frac < 0.33);
       }
     }
   }
