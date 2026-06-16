@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { GLTFLoader } from 'three/GLTFLoader';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { woodMaterial, brassMaterial, leatherMaterial, stoneMaterial, feltMaterial } from '../room/Materials.js';
 
