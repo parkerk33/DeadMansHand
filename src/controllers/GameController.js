@@ -3,18 +3,47 @@ import { PokerGame } from '../game/PokerGame.js';
 import { botDecide } from '../game/BotPlayer.js';
 import { Card3D, CARD_DECK_POS } from '../objects/Card3D.js';
 import { Character3D } from '../objects/Character3D.js';
-import { BettingRound, settlePots } from '../game/BettingEngine.js';
+import { BettingRound, settlePots, CHIP_UNIT } from '../game/BettingEngine.js';
 import { setupLighting, animateLights } from '../room/Lighting.js';
 import { createTable, FELT_TOP_Y } from '../room/Table.js';
 import { buildEnvironment } from '../room/Environment.js';
 import { tryLoadAsset } from '../objects/AssetLoader.js';
+import { ChipsView } from '../objects/ChipsView.js';
+import { ChipPhysics } from '../physics/ChipPhysics.js';
 import { Tweener } from '../utils/Tweener.js';
 
-// Custom GLB props (drop files in public/assets/). Missing files fall back to
-// the procedural meshes. Override scale here once you've eyeballed it.
-const CUSTOM_TABLE_URL = '/assets/table.glb';
-const TABLE_TARGET_DIAMETER = 6.4;   // fit the model across the play area
-const TABLE_MAX_HEIGHT = 1.7;        // don't let a tall model tower over the felt
+// Prototype: real rigid-body physics for chips dropping into the pot. Set false to
+// fall back to the hand-animated tween/scatter.
+const USE_CHIP_PHYSICS = true;
+
+// The hero table is assembled from imported pieces (bottom → top):
+//   base   = pedestal/foot from the floor up to the underside of the top
+//   center = furn_08, the play surface — community cards rest on its TOP (= FELT_TOP_Y)
+//   border = furn_11, the outer wood rim, concentric around the center (NOT stacked)
+//   tray   = dealer tray prop resting on the surface
+// Tuning knobs per piece:
+//   diam        target footprint (max of width/depth) in world units
+//   sizeX/sizeZ independent per-axis footprint (overrides diam on that axis)
+//   flattenY    independent world thickness for slab pieces (omit → scale uniformly)
+//   fitHeight   pillar mode: scale by height instead of footprint
+//   diamCap     cap footprint after a height-fit
+//   top/bottom  anchor that face to a world Y
+//   offset      [x,y,z] XZ shift (for off-centre props like the tray)
+//
+// Blueprint table = Poker Table (furn_08, felt+rim) on a Table Pedestal column on a
+// wide Pedestal Base (bottom → top): a short wide foot, a narrower turned column,
+// then the tabletop whose surface sits at FELT_TOP_Y.
+const TABLE_PARTS = [
+  { key: 'base',     url: '/assets/sot_pedestal_base.glb', fitHeight: 0.45, diamCap: 2.3, bottom: 0 },
+  { key: 'pedestal', url: '/assets/sot_pedestal.glb',      fitHeight: 0.72, diamCap: 1.5, bottom: 0.4 },
+  { key: 'center',   url: '/assets/furniture_08.glb',      diam: 5.3, flattenY: 0.16, top: FELT_TOP_Y, hideProcedural: true },
+  // Dealer tray + furn_11 rim removed for now — the felt tabletop stands on its own.
+];
+
+// Imported low-poly props (decimated from the heavy Meshy originals).
+const DEALER_BTN_URL = '/assets/dealer_button_lp.glb';
+const DEALER_BTN_DIAM = 0.42;  // dealer button disc
+const DEALER_BTN_R = 1.95;     // radius from centre the button sits at (in front of the dealer seat)
 
 // Height at which cards rest on the felt.
 const CARD_Y = FELT_TOP_Y + 0.015;
@@ -30,18 +59,18 @@ const SEAT_POSITIONS = [
 
 // Hole cards laid on the felt in front of each seat, toward the center.
 const HOLE_POSITIONS = [
-  [new THREE.Vector3(-0.45, CARD_Y, 2.15),  new THREE.Vector3(0.45, CARD_Y, 2.15)],   // south
-  [new THREE.Vector3(-2.15, CARD_Y, -0.45), new THREE.Vector3(-2.15, CARD_Y, 0.45)],  // west
-  [new THREE.Vector3(-0.45, CARD_Y, -2.15), new THREE.Vector3(0.45, CARD_Y, -2.15)],  // north
-  [new THREE.Vector3(2.15, CARD_Y, -0.45),  new THREE.Vector3(2.15, CARD_Y, 0.45)],   // east
+  [new THREE.Vector3(-0.3, CARD_Y, 2.15),  new THREE.Vector3(0.3, CARD_Y, 2.15)],   // south
+  [new THREE.Vector3(-2.15, CARD_Y, -0.3), new THREE.Vector3(-2.15, CARD_Y, 0.3)],  // west
+  [new THREE.Vector3(-0.3, CARD_Y, -2.15), new THREE.Vector3(0.3, CARD_Y, -2.15)],  // north
+  [new THREE.Vector3(2.15, CARD_Y, -0.3),  new THREE.Vector3(2.15, CARD_Y, 0.3)],   // east
 ];
 
 const COMMUNITY_POSITIONS = [
-  new THREE.Vector3(-1.04, CARD_Y, -0.15),
-  new THREE.Vector3(-0.52, CARD_Y, -0.15),
+  new THREE.Vector3(-0.64, CARD_Y, -0.15),
+  new THREE.Vector3(-0.32, CARD_Y, -0.15),
   new THREE.Vector3(0, CARD_Y, -0.15),
-  new THREE.Vector3(0.52, CARD_Y, -0.15),
-  new THREE.Vector3(1.04, CARD_Y, -0.15),
+  new THREE.Vector3(0.32, CARD_Y, -0.15),
+  new THREE.Vector3(0.64, CARD_Y, -0.15),
 ];
 
 // Where each player's hole card lands on the felt.
@@ -98,34 +127,160 @@ export class GameController {
     this.lights = setupLighting(this.scene);
     this.tableGroup = createTable(this.scene);
     buildEnvironment(this.scene);
-    this._loadCustomTable();
+    this._loadTableAssembly();
+    this._loadStaticProps();
+    this.chipsView = new ChipsView(this.scene, this.tweener, (cv) => {
+      this._buildDenomPanel(cv);
+      this._buildRaiseChips(cv);
+    });
+
+    // Optional chip physics — init is async (WASM); wire it into ChipsView when ready.
+    if (USE_CHIP_PHYSICS) {
+      this.chipPhysics = new ChipPhysics(this.scene);
+      this.chipPhysics.init().then(() => this.chipsView.setPhysics(this.chipPhysics))
+        .catch((e) => console.info('[physics] disabled:', e?.message || e));
+    }
   }
 
-  // Try to swap the procedural table for a Blender/AI .glb, auto-fitted to the
-  // play area. Falls back silently to the procedural table if the file is absent.
-  async _loadCustomTable() {
-    const obj = await tryLoadAsset(CUSTOM_TABLE_URL, { reskin: false });
-    if (!obj) return;
+  // Populate the collapsible chip-denominations legend from the loaded chip colours.
+  _buildDenomPanel(cv) {
+    const list = document.getElementById('denom-list');
+    if (!list) return;
+    list.innerHTML = '';
+    for (const d of cv.getDenoms()) {
+      const row = document.createElement('div');
+      row.className = 'denom-row';
+      row.innerHTML = `<span class="denom-swatch" style="background:${d.color}"></span><span>${d.value}</span>`;
+      list.appendChild(row);
+    }
+  }
 
-    // Fit: scale to span the play area, but cap height so it can't tower.
+  // Rebuild each player's remaining stack and current-street bet from live state.
+  // The pot is a persistent physical pile fed by collectBetsToPot / awardPot, so
+  // it is intentionally NOT rebuilt here.
+  _refreshChips() {
+    if (!this.chipsView || !this.game) return;
+    const stacks = [0, 0, 0, 0], bets = [0, 0, 0, 0];
+    for (let i = 0; i < 4; i++) {
+      stacks[i] = this.game.players[i].chips;
+      // Folded players show no bet — their committed chips have been thrown into
+      // the pot (see _applyAction), so don't re-render them in front of the seat.
+      bets[i] = (this.round && !this.game.players[i].folded) ? (this.round.roundBets[i] || 0) : 0;
+    }
+    this.chipsView.update({ stacks, bets });
+  }
+
+  // Load the imported dealer button, wrapped in a holder group whose origin is its
+  // felt-contact centre so positioning is trivial. (Deck pile removed for now.)
+  _loadStaticProps() {
+    tryLoadAsset(DEALER_BTN_URL, { reskin: false }).then((btn) => {
+      if (!btn) return;
+      this._fitAndAnchor(btn, DEALER_BTN_DIAM);
+      const holder = new THREE.Group();
+      holder.add(btn);
+      this.dealerButton = holder;
+      this.scene.add(holder);
+      this._placeDealerButton();
+    });
+  }
+
+  // Scale obj to a target footprint and shift it so its X/Z centre and bottom face
+  // sit at the local origin (ready to drop into a positioned holder group).
+  _fitAndAnchor(obj, diam) {
     let box = new THREE.Box3().setFromObject(obj);
     const size = box.getSize(new THREE.Vector3());
-    const maxXZ = Math.max(size.x, size.z) || 1;
-    const scale = Math.min(TABLE_TARGET_DIAMETER / maxXZ, TABLE_MAX_HEIGHT / (size.y || 1));
-    obj.scale.setScalar(scale);
-
-    // Re-measure, then centre on X/Z and align the TOP to the felt height so
-    // cards/chips still sit on the surface.
+    obj.scale.setScalar(diam / (Math.max(size.x, size.z) || 1));
     obj.updateMatrixWorld(true);
     box = new THREE.Box3().setFromObject(obj);
     const c = box.getCenter(new THREE.Vector3());
-    obj.position.x += -c.x;
-    obj.position.z += -c.z;
-    obj.position.y += FELT_TOP_Y - box.max.y;
+    obj.position.set(-c.x, -box.min.y, -c.z);
+    obj.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  }
 
-    this.scene.add(obj);
-    this.customTable = obj;
-    if (this.tableGroup) this.tableGroup.visible = false;  // hide procedural one
+  // Move the dealer button onto the felt in front of the current dealer seat.
+  _placeDealerButton() {
+    if (!this.dealerButton || !this.game) return;
+    const dir = SEAT_POSITIONS[this.game.dealerIndex].clone();
+    dir.y = 0; dir.normalize();
+    this.dealerButton.position.set(dir.x * DEALER_BTN_R, FELT_TOP_Y, dir.z * DEALER_BTN_R);
+    this.dealerButton.visible = true;
+  }
+
+  // Assemble the hero table from the imported pieces (see TABLE_PARTS). Each loads
+  // independently and is fitted/anchored by its config; the procedural table stays
+  // as the fallback and is hidden once the play-surface piece (center) loads.
+  _loadTableAssembly() {
+    this.tableParts = {};
+    for (const part of TABLE_PARTS) {
+      tryLoadAsset(part.url, { reskin: false }).then((obj) => {
+        if (!obj) return;   // missing piece: others still assemble, procedural stays if center failed
+        const placed = part.tile ? this._tileRimPart(obj, part) : this._placeTablePart(obj, part);
+        placed.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+        if (!part.tile) this.scene.add(placed);   // _tileRimPart already adds its group
+        this.tableParts[part.key] = placed;
+        if (part.hideProcedural && this.tableGroup) this.tableGroup.visible = false;
+      });
+    }
+  }
+
+  // Tile a single rim segment around the table edge into a continuous rail. Returns
+  // the group of clones (already added to the scene).
+  _tileRimPart(template, part) {
+    const t = part.tile;
+    const box = new THREE.Box3().setFromObject(template);
+    const size = box.getSize(new THREE.Vector3());
+    const fit = t.segH / (size.y || 1);             // base scale fits the target height
+    const segLen0 = (size.x || 1) * fit;            // natural segment length at that scale
+    const count = t.count || Math.max(6, Math.round((2 * Math.PI * t.radius) / segLen0));
+    const lenScale = ((2 * Math.PI * t.radius) / count / (segLen0 || 1)) * (t.overlap || 1);
+
+    const ring = new THREE.Group();
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2 + (t.angleOffset || 0);
+      const seg = template.clone(true);
+      seg.scale.set(fit * lenScale, fit, fit);      // stretch length to close the ring; keep height/thickness
+      seg.updateMatrixWorld(true);
+      const b = new THREE.Box3().setFromObject(seg);
+      const c = b.getCenter(new THREE.Vector3());
+      seg.position.set(-c.x, -b.min.y, -c.z);       // centre on X/Z, bottom at the holder origin
+
+      const holder = new THREE.Group();
+      holder.add(seg);
+      holder.position.set(Math.cos(a) * t.radius, t.y, Math.sin(a) * t.radius);
+      holder.rotation.y = -a + (t.rotOffset || 0);  // turn the length tangent to the ring
+      ring.add(holder);
+    }
+    this.scene.add(ring);
+    return ring;
+  }
+
+  // Scale a piece to its target footprint (or height in pillar mode), centre it on
+  // X/Z (plus optional offset), and anchor its top or bottom face to a world Y.
+  _placeTablePart(obj, part) {
+    let box = new THREE.Box3().setFromObject(obj);
+    let size = box.getSize(new THREE.Vector3());
+    let sx, sy, sz;
+    if (part.fitHeight != null) {
+      sx = sy = sz = part.fitHeight / (size.y || 1);
+      const diam = Math.max(size.x, size.z) * sx;
+      if (part.diamCap && diam > part.diamCap) { const k = part.diamCap / diam; sx *= k; sy *= k; sz *= k; }
+    } else {
+      const uni = part.diam != null ? part.diam / (Math.max(size.x, size.z) || 1) : 1;
+      sx = part.sizeX != null ? part.sizeX / (size.x || 1) : uni;
+      sz = part.sizeZ != null ? part.sizeZ / (size.z || 1) : uni;
+      sy = part.flattenY != null ? part.flattenY / (size.y || 1) : uni;
+    }
+    obj.scale.set(sx, sy, sz);
+
+    obj.updateMatrixWorld(true);
+    box = new THREE.Box3().setFromObject(obj);
+    const c = box.getCenter(new THREE.Vector3());
+    const off = part.offset || [0, 0, 0];
+    obj.position.x += off[0] - c.x;
+    obj.position.z += off[2] - c.z;
+    if (part.top != null) obj.position.y += part.top - box.max.y;
+    else if (part.bottom != null) obj.position.y += part.bottom - box.min.y;
+    return obj;
   }
 
   // ── UI helpers ─────────────────────────────────────────────────────────────
@@ -139,17 +294,105 @@ export class GameController {
     $('btn-raise').addEventListener('click', () => this._showRaisePanel());
     $('btn-ability').addEventListener('click', () => this._useAbility());
 
-    $('btn-min').addEventListener('click', () => this._humanRaise('min'));
-    $('btn-pot').addEventListener('click', () => this._humanRaise('pot'));
-    $('btn-2pot').addEventListener('click', () => this._humanRaise('2pot'));
-    $('btn-allin').addEventListener('click', () => this._humanRaise('allin'));
+    // Chip-picker raise controls
+    this.raiseSel = 0; this.raiseInc = 1; this.raiseCounts = {};
+    for (const b of document.querySelectorAll('.inc-btn')) {
+      b.addEventListener('click', () => {
+        this.raiseInc = Number(b.dataset.inc);
+        for (const o of document.querySelectorAll('.inc-btn')) o.classList.toggle('active', o === b);
+      });
+    }
+    $('btn-raise-pot').addEventListener('click', () => this._raisePreset('pot'));
+    $('btn-raise-allin').addEventListener('click', () => this._raisePreset('allin'));
+    $('btn-raise-clear').addEventListener('click', () => this._raiseSetAmount(0));
+    $('btn-raise-confirm').addEventListener('click', () => this._raiseConfirm());
     $('btn-cancel-raise').addEventListener('click', () => this._hideRaisePanel());
+
+    const denomToggle = $('denom-toggle');
+    if (denomToggle) {
+      denomToggle.addEventListener('click', () => {
+        const list = $('denom-list');
+        const open = list.classList.toggle('open');
+        denomToggle.textContent = `⛁ Chip Values ${open ? '▴' : '▾'}`;
+      });
+    }
   }
 
   _showPanel(id) { document.getElementById(id).style.display = 'flex'; }
   _hidePanel(id) { document.getElementById(id).style.display = 'none'; }
-  _showRaisePanel() { this._showPanel('raise-panel'); }
-  _hideRaisePanel() { this._hidePanel('raise-panel'); }
+
+  // Build the clickable denomination chips in the raise panel from the loaded chip
+  // colours (so the picker matches the 3D chips). Keyed ids let keys 1–5 add them.
+  _buildRaiseChips(cv) {
+    const wrap = document.getElementById('raise-chips');
+    if (!wrap) return;
+    wrap.innerHTML = '';
+    cv.getDenoms().forEach((d, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'raise-chip';
+      btn.id = `raise-chip-${i}`;
+      btn.style.background = d.color;
+      btn.textContent = d.value;
+      btn.addEventListener('click', () => this._raiseAddChip(d.value));
+      wrap.appendChild(btn);
+    });
+  }
+
+  _showRaisePanel() {
+    if (!this.round) return;
+    this.raiseLegal = this.round.legalActions(0);
+    this._raiseSetAmount(0);
+    this._showPanel('raise-panel');
+  }
+  _hideRaisePanel() { this._hidePanel('raise-panel'); this.chipsView?.clearHighlight(); }
+
+  // Add chips of one denomination to the bet (individual or ×5 stack), tracking the
+  // exact chips clicked so we can highlight the matching ones on the player's stack.
+  _raiseAddChip(value) {
+    const L = this.raiseLegal;
+    if (!L) return;
+    const add = Math.min(this.raiseInc, Math.floor((L.allInCommit - this.raiseSel) / value));
+    if (add <= 0) return;
+    this.raiseCounts[value] = (this.raiseCounts[value] || 0) + add;
+    this.raiseSel += value * add;
+    this._afterRaiseChange();
+  }
+
+  _raisePreset(kind) {
+    if (!this.raiseLegal) return;
+    const amt = kind === 'allin' ? this.raiseLegal.allInCommit : this.raiseLegal.toCall + this.game.pot;
+    this._raiseSetAmount(Math.min(amt, this.raiseLegal.allInCommit));
+  }
+
+  // Set the bet to an absolute amount (clear / presets); chip counts derive from the
+  // standard breakdown of that amount.
+  _raiseSetAmount(v) {
+    this.raiseSel = Math.max(0, Math.round(v));
+    this.raiseCounts = this.chipsView ? this.chipsView.denomCounts(this.raiseSel) : {};
+    this._afterRaiseChange();
+  }
+
+  _afterRaiseChange() {
+    const L = this.raiseLegal || { minRaiseCommit: 0, allInCommit: 0, toCall: 0 };
+    const valid = this.raiseSel >= L.minRaiseCommit && this.raiseSel <= L.allInCommit;
+    document.getElementById('raise-total').textContent = this.raiseSel;
+    document.getElementById('raise-bounds').textContent =
+      `to call ${L.toCall} · min ${L.minRaiseCommit} · max ${L.allInCommit}`;
+    const confirm = document.getElementById('btn-raise-confirm');
+    confirm.disabled = !valid;
+    confirm.textContent = valid ? `RAISE TO ${this.raiseSel}` : `MIN ${L.minRaiseCommit}`;
+    this.chipsView?.highlightStackChips(0, this.raiseCounts);   // glow the chips on your stack
+  }
+
+  _raiseConfirm() {
+    const L = this.raiseLegal;
+    if (!L || this.raiseSel < L.minRaiseCommit || this.raiseSel > L.allInCommit) return;
+    const amount = this.raiseSel;
+    this._hideRaisePanel();
+    this._setActionButtons(false);
+    this._hideMsg();
+    this._applyAction(0, 'raise', amount);
+  }
 
   _showMsg(text, duration = 0) {
     const el = document.getElementById('msg-overlay');
@@ -259,9 +502,13 @@ export class GameController {
     this.communityCard3Ds = [];
 
     this.game.startRound();
+    this._placeDealerButton();
     const blinds = this.game.postBlinds();
     this._updatePot();
     this._updatePlayerPanels();
+    this.round = null;                 // preflop round not created yet
+    this.chipsView?.clear();           // new hand: empty pot/bets, then show fresh stacks
+    this._refreshChips();
     this._showMsg(`Blinds posted — SB: ${blinds.sbAmt}, BB: ${blinds.bbAmt}`, 2000);
 
     // Deal hole cards after short delay
@@ -373,6 +620,7 @@ export class GameController {
     });
     this.bState = this.round;          // alias so ability code can read currentBet/noRaise/etc.
 
+    this._refreshChips();              // show this street's bets (blinds preflop) + accumulated pot
     this._updatePlayerPanels();
     this._advanceBetting();
   }
@@ -453,24 +701,6 @@ export class GameController {
     this._humanAction(legal.canCheck ? 'check' : 'call');
   }
 
-  _humanRaise(preset) {
-    this._hideRaisePanel();
-    const legal = this.round.legalActions(0);
-    const pot = this.game.pot;
-    let amount;
-    switch (preset) {
-      case 'min':  amount = legal.minRaiseCommit; break;
-      case 'pot':  amount = legal.toCall + pot; break;
-      case '2pot': amount = legal.toCall + pot * 2; break;
-      case 'allin': amount = legal.allInCommit; break;
-    }
-    // Keep within [min legal raise, all-in].
-    amount = Math.max(legal.minRaiseCommit, Math.min(amount, legal.allInCommit));
-    this._setActionButtons(false);
-    this._hideMsg();
-    this._applyAction(0, 'raise', amount);
-  }
-
   _doBotAction(idx) {
     const p = this.game.players[idx];
     const legal = this.round.legalActions(idx);
@@ -491,14 +721,29 @@ export class GameController {
     this._applyAction(idx, act, amount);
   }
 
+  // Snap a raise's total commitment to the chip grid so it's always makeable with
+  // real chips. All-in commits the exact (already chip-aligned) stack untouched.
+  _snapRaise(idx, amount) {
+    const legal = this.round.legalActions(idx);
+    if (amount >= legal.allInCommit) return legal.allInCommit;
+    const snapped = Math.round(amount / CHIP_UNIT) * CHIP_UNIT;
+    return Math.max(legal.minRaiseCommit, Math.min(snapped, legal.allInCommit));
+  }
+
   _applyAction(idx, action, amount) {
     this._clearTurnTimeout();           // an action was taken; stop this turn's clock
     this.turn = null;
+    if (action === 'raise' || action === 'bet') amount = this._snapRaise(idx, amount);
     const p = this.game.players[idx];
     const res = this.round.apply(idx, action, amount);
     let msg = '';
 
     if (action === 'fold') {
+      // Throw any committed chips (e.g. a blind folding preflop) into the pot.
+      if (this.round.roundBets[idx] > 0) {
+        this.chipsView?.collectSeatToPot(idx);
+        this.characters[idx]?.playGesture?.('toss');   // planned: character flicks the chips in
+      }
       this.characters[idx]?.setFolded(true);
       for (const c of this.holeCard3Ds[idx]) c?.setFaceDown();
       msg = `${p.name} folds.`;
@@ -512,6 +757,7 @@ export class GameController {
 
     this._updatePot();
     this._updatePlayerPanels();
+    this._refreshChips();             // stack shrinks, bet pile grows in front of the actor
     if (msg) this._showMsg(msg, 1800);
 
     setTimeout(() => this._advanceBetting(), 600);
@@ -521,21 +767,21 @@ export class GameController {
     const { phase } = this.bState;
     const alive = this.game.inHandPlayers;
 
-    if (alive.length <= 1) { this._endRound(); return; }
+    // Slide each player's bet physically into the pot, THEN advance — so the pot is
+    // settled before a showdown awards it.
+    const proceed = () => {
+      if (alive.length <= 1) { this._endRound(); return; }
+      this.nobleDecreeActive = false;
+      this.knightCharge = false;
+      this.markedTarget = -1;          // Assassin's mark only lasts the round
+      if (phase === 'preflop') setTimeout(() => this._dealFlop(), 1000);
+      else if (phase === 'flop') setTimeout(() => this._dealTurn(), 1000);
+      else if (phase === 'turn') setTimeout(() => this._dealRiver(), 1000);
+      else if (phase === 'river') setTimeout(() => this._showdown(), 1000);
+    };
 
-    this.nobleDecreeActive = false;
-    this.knightCharge = false;
-    this.markedTarget = -1;            // Assassin's mark only lasts the round
-
-    if (phase === 'preflop') {
-      setTimeout(() => this._dealFlop(), 1000);
-    } else if (phase === 'flop') {
-      setTimeout(() => this._dealTurn(), 1000);
-    } else if (phase === 'turn') {
-      setTimeout(() => this._dealRiver(), 1000);
-    } else if (phase === 'river') {
-      setTimeout(() => this._showdown(), 1000);
-    }
+    if (this.chipsView) this.chipsView.collectBetsToPot(proceed);
+    else proceed();
   }
 
   _dealFlop() {
@@ -611,18 +857,30 @@ export class GameController {
     const cls = this.selectedClasses[0].name;
     const human = this.game.players[0];
     if (humanWon > 0 && cls === 'Noble') {
-      const bonus = Math.floor(humanWon * 0.15);
+      const bonus = Math.round(humanWon * 0.15 / CHIP_UNIT) * CHIP_UNIT;  // keep chip-aligned
       human.chips += bonus;
       this._showMsg(`Tax Collection! +${bonus} bonus chips! 👑`, 2500);
     }
     if (humanWon > 0 && cls === 'Assassin' && this.assassinBonus) {
-      human.chips += Math.floor(humanWon * 0.25);
+      human.chips += Math.round(humanWon * 0.25 / CHIP_UNIT) * CHIP_UNIT;
     }
 
     const winNames = result.summary || 'No one';
     this._showMsg(`🏆 ${winNames} wins!`, 0);
     this._updatePlayerPanels();
     this._updatePot();
+
+    // Slide the physical pot to the biggest winner, then rebuild stacks with the
+    // new totals. (Split/side pots animate to one seat; the chip counts stay correct.)
+    const tally = {};
+    for (const pot of result.pots) {
+      for (const w of pot.winners) tally[w] = (tally[w] || 0) + pot.amount / pot.winners.length;
+    }
+    let winnerSeat = this.game.inHandPlayers[0]?.index ?? 0, best = -1;
+    for (const k of Object.keys(tally)) { if (tally[k] > best) { best = tally[k]; winnerSeat = +k; } }
+    this.round = null;                 // hand over → stacks rebuild from new totals
+    if (this.chipsView) this.chipsView.awardPot(winnerSeat, () => this._refreshChips());
+    else this._refreshChips();
 
     setTimeout(() => {
       if (this.game.isGameOver()) {
@@ -1043,6 +1301,7 @@ export class GameController {
 
   update(deltaMs, time) {
     this.tweener.update(deltaMs);
+    this.chipPhysics?.step();
     if (this.lights) animateLights(this.lights, time);
 
     // Billboard characters toward camera

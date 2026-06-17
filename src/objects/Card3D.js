@@ -1,55 +1,16 @@
 import * as THREE from 'three';
 
-const CW = 0.46, CH = 0.64, CD = 0.016;
+const CW = 0.28, CH = 0.39, CD = 0.011;
 
+// The card back is the imported "Golden Compass" art (texture extracted from the
+// Meshy model via scripts/extract-cardback.mjs). Loaded once and shared by all cards;
+// the texture appears as soon as the image arrives.
 let _backTex = null;
 function getBackTexture() {
   if (_backTex) return _backTex;
-  const W = 400, H = 570;
-  const c = document.createElement('canvas');
-  c.width = W; c.height = H;
-  const ctx = c.getContext('2d');
-
-  const grad = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, W * 0.75);
-  grad.addColorStop(0, '#1f3262'); grad.addColorStop(1, '#0d1730');
-  ctx.fillStyle = grad;
-  roundRect(ctx, 0, 0, W, H, 18); ctx.fill();
-
-  ctx.strokeStyle = '#c69a3a'; ctx.lineWidth = 6;
-  roundRect(ctx, 3, 3, W - 6, H - 6, 16); ctx.stroke();
-  ctx.strokeStyle = '#7a551c'; ctx.lineWidth = 2;
-  roundRect(ctx, 16, 16, W - 32, H - 32, 8); ctx.stroke();
-  ctx.strokeStyle = 'rgba(214,179,90,0.5)'; ctx.lineWidth = 1.5;
-  roundRect(ctx, 26, 26, W - 52, H - 52, 4); ctx.stroke();
-
-  // Compass rose emblem
-  const ecx = W / 2, ecy = H / 2, R = W * 0.30, R2 = W * 0.1;
-  ctx.save(); ctx.translate(ecx, ecy);
-  for (let layer = 0; layer < 2; layer++) {
-    ctx.save(); ctx.rotate(Math.PI / 4 * layer);
-    for (let i = 0; i < 4; i++) {
-      ctx.rotate(Math.PI / 2);
-      ctx.beginPath();
-      ctx.moveTo(0, -R); ctx.lineTo(R2 * 0.5, -R2); ctx.lineTo(0, 0);
-      ctx.lineTo(-R2 * 0.5, -R2); ctx.closePath();
-      ctx.fillStyle = layer === 0 ? '#c69a3a' : '#e0bf66';
-      ctx.globalAlpha = layer === 0 ? 1 : 0.7; ctx.fill();
-    }
-    ctx.restore();
-  }
-  ctx.globalAlpha = 1;
-  ctx.beginPath(); ctx.arc(0, 0, R2 * 0.6, 0, Math.PI * 2); ctx.fillStyle = '#c69a3a'; ctx.fill();
-  ctx.beginPath(); ctx.arc(0, 0, R2 * 0.32, 0, Math.PI * 2); ctx.fillStyle = '#17264a'; ctx.fill();
-  ctx.restore();
-
-  // Corner flourishes
-  ['✦','✦','✦','✦'].forEach((r, i) => {
-    ctx.font = '24px serif'; ctx.fillStyle = '#d6b35a';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(r, i < 2 ? 42 : W-42, i % 2 === 0 ? 48 : H-48);
-  });
-
-  _backTex = new THREE.CanvasTexture(c);
+  _backTex = new THREE.TextureLoader().load('/assets/card_back_tex.jpg');
+  _backTex.colorSpace = THREE.SRGBColorSpace;
+  _backTex.anisotropy = 4;
   return _backTex;
 }
 

@@ -128,6 +128,12 @@ function drawRoundRect(ctx, x, y, w, h, r) {
 
 export function createTable(scene) {
   const group = new THREE.Group();
+  // The procedural pedestal/skirt live in their own child group so the controller
+  // can hide them and mount the imported SOT pedestal instead, while keeping the
+  // gameplay-tuned felt tabletop above.
+  const base = new THREE.Group();
+  group.add(base);
+  group.userData.base = base;
 
   const woodMat = woodMaterial({ rx: 4, ry: 2 });
   const woodDark = woodMaterial({ rx: 4, ry: 2, tint: 0x6e4a30, rough: 0.82 });
@@ -154,30 +160,30 @@ export function createTable(scene) {
     [0.95, 0.92], [1.0, 1.0], [0.0, 1.0],
   ].map(([r, y]) => new THREE.Vector2(r, y));
   const pedestal = new THREE.Mesh(new THREE.LatheGeometry(profile, 40), woodMat);
-  pedestal.castShadow = true; pedestal.receiveShadow = true; group.add(pedestal);
+  pedestal.castShadow = true; pedestal.receiveShadow = true; base.add(pedestal);
 
   // Brass bands at the turn points
   for (const [y, r] of [[0.15, 1.5], [0.31, 1.18], [0.62, 0.74], [0.92, 0.95]]) {
     const bandRing = new THREE.Mesh(new THREE.TorusGeometry(r, 0.035, 8, 32), brass);
-    bandRing.rotation.x = Math.PI / 2; bandRing.position.y = y; group.add(bandRing);
+    bandRing.rotation.x = Math.PI / 2; bandRing.position.y = y; base.add(bandRing);
   }
 
   // ── Underside skirt (carved side, the "belly") ──
   const skirt = new THREE.Mesh(new THREE.CylinderGeometry(TABLE_OUTER_R - 0.08, TABLE_OUTER_R - 0.32, 0.46, 48), woodSkirt);
-  skirt.position.y = 0.82; skirt.castShadow = true; group.add(skirt);
+  skirt.position.y = 0.82; skirt.castShadow = true; base.add(skirt);
 
   // Carved vertical panels + brass brackets around the skirt (aligned to 6 seats)
   for (let i = 0; i < 12; i++) {
     const a = (i / 12) * Math.PI * 2;
     const x = Math.cos(a) * (TABLE_OUTER_R - 0.1), z = Math.sin(a) * (TABLE_OUTER_R - 0.1);
     const panel = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.34, 0.46), woodDark);
-    panel.position.set(x, 0.82, z); panel.rotation.y = -a; group.add(panel);
+    panel.position.set(x, 0.82, z); panel.rotation.y = -a; base.add(panel);
     if (i % 2 === 0) {
       const bracket = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.26, 0.14), brass);
-      bracket.position.set(x, 0.82, z); bracket.rotation.y = -a; group.add(bracket);
+      bracket.position.set(x, 0.82, z); bracket.rotation.y = -a; base.add(bracket);
       const rivet = new THREE.Mesh(new THREE.SphereGeometry(0.03, 6, 6), brassDark);
       rivet.position.set(Math.cos(a) * (TABLE_OUTER_R - 0.04), 0.82, Math.sin(a) * (TABLE_OUTER_R - 0.04));
-      group.add(rivet);
+      base.add(rivet);
     }
   }
 

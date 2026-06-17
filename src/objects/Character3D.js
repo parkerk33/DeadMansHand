@@ -290,6 +290,13 @@ export class Character3D {
     if (this.portrait) this.portrait.material.opacity = on ? 0.32 : 1.0;
   }
 
+  // Hook for the planned character-animation feature: GameController calls this at
+  // key beats (e.g. playGesture('toss') when a blind folds preflop). Wire up an
+  // AnimationMixer / clips here when the rigged models are ready — no-op for now.
+  playGesture(/* name */) {
+    // TODO: play the matching animation clip (toss, bet, win, fold, idle, …).
+  }
+
   destroy() {
     this.scene.remove(this.group);
   }

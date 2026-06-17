@@ -1,6 +1,15 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GameController } from './controllers/GameController.js';
 import { CLASS_LIST } from './classes/ClassDefinitions.js';
+import { initGallery } from './Gallery.js';
+
+// Open the page with ?gallery to inspect/label the raw asset models instead of playing.
+const GALLERY_MODE = new URLSearchParams(globalThis.location.search).has('gallery');
 
 // ── Renderer ───────────────────────────────────────────────────────────────
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -27,10 +36,49 @@ const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerH
 camera.position.copy(EYE);
 scene.add(camera);   // so camera-parented held cards render
 
+// ── Post-processing: stylized look (bloom + warm grade + vignette) ──────────
+// RenderPass → bloom (glows on flames/gold/daylight) → OutputPass (ACES tonemap
+// + sRGB) → grade/vignette. Pushes the real-time render toward the painterly refs.
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.55,   // strength
+  0.5,    // radius
+  0.82,   // threshold — only bright things (flames, gold, sky) bloom
+);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
+
+const GradeShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    warm: { value: new THREE.Vector3(1.06, 1.0, 0.9) },  // warm shadows/overall tint
+    saturation: { value: 1.12 },
+    vignette: { value: 0.65 },
+  },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform vec3 warm; uniform float saturation; uniform float vignette;
+    varying vec2 vUv;
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      c.rgb *= warm;
+      float l = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+      c.rgb = mix(vec3(l), c.rgb, saturation);
+      float vig = smoothstep(0.85, 0.25, length(vUv - 0.5));
+      c.rgb *= mix(1.0, vig, vignette);
+      gl_FragColor = c;
+    }`,
+};
+composer.addPass(new ShaderPass(GradeShader));
+
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
 });
 
 // ── Mouse-look (stationary first-person pan: drag to look around) ───────────
@@ -70,8 +118,15 @@ function applyLook() {
   camera.lookAt(_lookAt.copy(EYE).add(_lookDir));
 }
 
+// ── Gallery mode short-circuits the whole game ──────────────────────────────
+if (GALLERY_MODE) {
+  document.getElementById('menu-overlay').style.display = 'none';
+  document.getElementById('hud').style.display = 'none';
+  initGallery(scene, camera, renderer);
+}
+
 // ── Game controller ────────────────────────────────────────────────────────
-const controller = new GameController(renderer, scene, camera, CLASS_LIST.slice(0, 4));
+const controller = GALLERY_MODE ? null : new GameController(renderer, scene, camera, CLASS_LIST.slice(0, 4));
 
 // ── Menu logic ─────────────────────────────────────────────────────────────
 let selectedClass = null;
@@ -128,26 +183,32 @@ document.getElementById('btn-menu').addEventListener('click', () => {
 });
 
 // ── Keyboard shortcuts ─────────────────────────────────────────────────────
-// Each key just "clicks" the matching button, so disabled/hidden buttons are
-// automatically ignored (a disabled control won't fire click; offsetParent is
-// null when its panel is hidden).
+// Each key "clicks" the matching button, so disabled/hidden buttons are ignored
+// automatically (a disabled control won't fire click; offsetParent is null when
+// its panel is hidden). Values may be a list — the first visible+enabled wins, so
+// the same key can serve different contexts (e.g. Enter = confirm raise or next
+// round; 1–5 add chips to the bet while the raise panel is open).
 const KEYMAP = {
   f: 'btn-fold',
   c: 'btn-check', ' ': 'btn-check',      // check / call
-  r: 'btn-raise',                         // open raise options
+  r: 'btn-raise',                         // open the chip picker
   e: 'btn-ability',                       // class ultimate
-  1: 'btn-min', 2: 'btn-pot', 3: 'btn-2pot', 4: 'btn-allin',
+  1: 'raise-chip-0', 2: 'raise-chip-1', 3: 'raise-chip-2', 4: 'raise-chip-3', 5: 'raise-chip-4',
   escape: 'btn-cancel-raise',
-  enter: 'btn-next-round',
+  enter: ['btn-raise-confirm', 'btn-next-round'],
 };
 globalThis.addEventListener('keydown', (ev) => {
   if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat) return;
-  const id = KEYMAP[ev.key.toLowerCase()];
-  if (!id) return;
-  const el = document.getElementById(id);
-  if (el && !el.disabled && el.offsetParent !== null) {
-    ev.preventDefault();
-    el.click();
+  const entry = KEYMAP[ev.key.toLowerCase()];
+  if (!entry) return;
+  const ids = Array.isArray(entry) ? entry : [entry];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el && !el.disabled && el.offsetParent !== null) {
+      ev.preventDefault();
+      el.click();
+      return;
+    }
   }
 });
 
@@ -158,9 +219,17 @@ function animate() {
   requestAnimationFrame(animate);
   const delta = clock.getDelta();
   const elapsed = clock.getElapsedTime();
-  applyLook();
-  controller.update(delta * 1000, elapsed);
-  renderer.render(scene, camera);
+  if (!GALLERY_MODE) {
+    applyLook();
+    controller.update(delta * 1000, elapsed);
+  }
+  // Drift the dust motes (set up by the environment) for atmosphere.
+  const motes = scene.userData.dustMotes;
+  if (motes) {
+    motes.rotation.y += delta * 0.03;
+    motes.position.y = Math.sin(elapsed * 0.25) * 0.12;
+  }
+  composer.render();
 }
 
 animate();

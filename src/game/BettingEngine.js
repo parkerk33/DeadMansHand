@@ -1,5 +1,9 @@
 import { evaluateBestHand, compareHandResults, HAND_NAMES } from './HandEvaluator.js';
 
+// Smallest chip denomination — every monetary amount must be a multiple of this so
+// it's actually makeable with physical chips. (Matches the smallest CHIP_DENOMS value.)
+export const CHIP_UNIT = 25;
+
 /**
  * Pure betting-round state machine for one street. No DOM / no Three.js, so it
  * can be driven identically by the UI controller and by automated tests.
@@ -175,11 +179,13 @@ export function settlePots(game, communityCards) {
       if (cmp > 0) { best = elig[k]; winners = [best]; }
       else if (cmp === 0) winners.push(elig[k]);
     }
-    const share = Math.floor(layer.amount / winners.length);
-    let rem = layer.amount - share * winners.length;
-    for (const w of winners) {
-      players[w].chips += share;
-      if (rem > 0) { players[w].chips += 1; rem--; }  // odd chip to earliest seat
+    if (winners.length === 1) {
+      players[winners[0]].chips += layer.amount;           // single winner: exact
+    } else {
+      // Split pot: round every winner UP to a whole chip unit so each payout is
+      // makeable with real chips (creates a few chips — fine for casual play).
+      const share = Math.ceil((layer.amount / winners.length) / CHIP_UNIT) * CHIP_UNIT;
+      for (const w of winners) players[w].chips += share;
     }
     const h = handOf[best];
     pots.push({

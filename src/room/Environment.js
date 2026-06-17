@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { FELT_TOP_Y } from './Table.js';
 import { woodMaterial, brassMaterial, leatherMaterial, stoneMaterial } from './Materials.js';
+import { tryLoadAsset } from '../objects/AssetLoader.js';
 
 // ── Chairs / seats live on the floor (y 0). Figurines (controller) sit at radius 4.5. ──
 const CHAIR_R = 4.65;
@@ -83,8 +83,66 @@ export function buildEnvironment(scene) {
   buildBanners(scene);
   buildWallDetails(scene);
   buildChairs(scene);
-  buildChipStacks(scene);
-  buildProps(scene);
+  buildProps(scene);   // chips are now functional, managed by GameController/ChipsView
+  buildAtmosphere(scene);
+}
+
+// ── Atmosphere: sun shafts through the balcony + floating dust motes ──────────
+function shaftTexture() {
+  const c = document.createElement('canvas'); c.width = 64; c.height = 256;
+  const ctx = c.getContext('2d');
+  const v = ctx.createLinearGradient(0, 0, 0, 256);
+  v.addColorStop(0, 'rgba(255,240,210,0)');
+  v.addColorStop(0.18, 'rgba(255,238,200,0.55)');
+  v.addColorStop(1, 'rgba(255,234,194,0)');
+  ctx.fillStyle = v; ctx.fillRect(0, 0, 64, 256);
+  // soft horizontal falloff so the shaft has feathered edges
+  ctx.globalCompositeOperation = 'destination-out';
+  const h = ctx.createLinearGradient(0, 0, 64, 0);
+  h.addColorStop(0, 'rgba(0,0,0,1)'); h.addColorStop(0.5, 'rgba(0,0,0,0)'); h.addColorStop(1, 'rgba(0,0,0,1)');
+  ctx.fillStyle = h; ctx.fillRect(0, 0, 64, 256);
+  return new THREE.CanvasTexture(c);
+}
+
+function dotTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 32;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(16, 16, 16, 0, Math.PI * 2); ctx.fill();
+  return new THREE.CanvasTexture(c);
+}
+
+function buildAtmosphere(scene) {
+  // Sun shafts angling in from the open balcony (-z), additive + bloom-friendly.
+  const shaftTex = shaftTexture();
+  const shaftMat = new THREE.MeshBasicMaterial({
+    map: shaftTex, transparent: true, opacity: 0.5, depthWrite: false,
+    blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false,
+  });
+  for (const [x, rotY] of [[-2.4, 0.12], [0.2, -0.05], [2.6, -0.16]]) {
+    const shaft = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 7.5), shaftMat);
+    shaft.position.set(x, 3.4, -4.6);
+    shaft.rotation.set(-0.38, rotY, 0);   // tilt to lean into the room
+    scene.add(shaft);
+  }
+
+  // Floating dust motes catching the light (drifted in main.js).
+  const N = 150;
+  const pos = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    pos[i * 3] = (Math.random() - 0.5) * 13;
+    pos[i * 3 + 1] = Math.random() * 5 + 0.6;
+    pos[i * 3 + 2] = (Math.random() - 0.5) * 13 - 1;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const motes = new THREE.Points(geo, new THREE.PointsMaterial({
+    size: 0.045, map: dotTexture(), color: 0xffe6b0, transparent: true, opacity: 0.55,
+    depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+  }));
+  scene.add(motes);
+  scene.userData.dustMotes = motes;
 }
 
 // ── Sky dome + ocean + islands + castle ──
@@ -329,7 +387,28 @@ function buildBeams(scene, beamMat) {
 }
 
 // ── Iron chandelier above the table ──
+const CHANDELIER_Y = 4.3;     // height above the table it hangs at
+const CHANDELIER_SIZE = 2.6;  // target max dimension
+
 function buildChandelier(scene) {
+  tryLoadAsset('/assets/chandelier.glb', { reskin: false }).then((model) => {
+    if (model) {
+      const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
+      model.scale.setScalar(CHANDELIER_SIZE / (Math.max(size.x, size.y, size.z) || 1));
+      model.updateMatrixWorld(true);
+      const b2 = new THREE.Box3().setFromObject(model);
+      const c = b2.getCenter(new THREE.Vector3());
+      // Center it over the table at the hang height.
+      model.position.set(-c.x, CHANDELIER_Y - c.y, -c.z);
+      scene.add(model);
+    } else {
+      buildProceduralChandelier(scene);
+    }
+  });
+}
+
+function buildProceduralChandelier(scene) {
   const g = new THREE.Group();
   const iron = new THREE.MeshStandardMaterial({ color: 0x2a2a30, metalness: 0.6, roughness: 0.5 });
 
@@ -533,114 +612,97 @@ function makeChair(cushionColor, opts = {}) {
   return g;
 }
 
+// The 4 cardinal seats get the imported chair models; flip CHAIR_FACING if a
+// model's back ends up toward the table.
+const CHAIR_MODELS = ['/assets/chair_1.glb', '/assets/chair_2.glb', '/assets/chair_3.glb', '/assets/chair_4.glb'];
+const CHAIR_SEAT_ANGLES = [Math.PI / 2, Math.PI, -Math.PI / 2, 0]; // south(player), west, north, east
+const CHAIR_HEIGHT = 2.3;
+const CHAIR_FACING = 0;   // matches the character facing; flip to Math.PI if backs face the table
+
 function buildChairs(scene) {
-  const seats = [
-    { a: Math.PI / 2, color: 0x1a2452 },   // south (player) — navy
-    { a: Math.PI, color: 0x3a1a5a },        // west — purple
-    { a: -Math.PI / 2, color: 0x5a1a1a },   // north — red
-    { a: 0, color: 0x15502f },              // east — green
-    { a: -Math.PI / 4, color: 0x4a3015 },   // NE — brown (empty)
-    { a: -3 * Math.PI / 4, color: 0x1a3a5a },// NW — blue (empty)
-  ];
-  for (const s of seats) {
-    const isPlayer = s.a === Math.PI / 2;
-    // Player chair: low-backed + pushed back so it frames the bottom without hiding the felt
-    const r = isPlayer ? CHAIR_R + 0.55 : CHAIR_R;
-    const x = Math.cos(s.a) * r;
-    const z = Math.sin(s.a) * r;
-    const chair = makeChair(s.color, { lowBack: isPlayer });
-    chair.position.set(x, 0, z);
-    chair.rotation.y = Math.atan2(-x, -z);  // face the table center
-    scene.add(chair);
-  }
-}
+  const cushionColors = [0x1a2452, 0x3a1a5a, 0x5a1a1a, 0x15502f];
+  CHAIR_SEAT_ANGLES.forEach((a, i) => {
+    const x = Math.cos(a) * CHAIR_R, z = Math.sin(a) * CHAIR_R;
+    const faceCenter = Math.atan2(-x, -z) + CHAIR_FACING;
 
-// ── Fantasy chip: colored body + canvas top (gold trim ring, emblem, edge notches) ──
-const _chipTopCache = {};
-function chipTopTexture(bodyHex, trimHex) {
-  const key = bodyHex + '_' + trimHex;
-  if (_chipTopCache[key]) return _chipTopCache[key];
-  const S = 128;
-  const c = document.createElement('canvas'); c.width = c.height = S;
-  const ctx = c.getContext('2d'); const cx = S / 2;
-  ctx.fillStyle = '#' + bodyHex.toString(16).padStart(6, '0');
-  ctx.beginPath(); ctx.arc(cx, cx, S * 0.5, 0, Math.PI * 2); ctx.fill();
-  // White edge dashes (reference chip rim)
-  ctx.fillStyle = '#e8ddc5';
-  for (let i = 0; i < 16; i++) {
-    const a = (i / 16) * Math.PI * 2;
-    ctx.save(); ctx.translate(cx, cx); ctx.rotate(a);
-    ctx.fillRect(-S * 0.045, -S * 0.5, S * 0.09, S * 0.1); ctx.restore();
-  }
-  // Inner colored disc over the dashes
-  ctx.fillStyle = '#' + bodyHex.toString(16).padStart(6, '0');
-  ctx.beginPath(); ctx.arc(cx, cx, S * 0.38, 0, Math.PI * 2); ctx.fill();
-  // Gold trim ring
-  ctx.strokeStyle = '#' + trimHex.toString(16).padStart(6, '0');
-  ctx.lineWidth = S * 0.05; ctx.beginPath(); ctx.arc(cx, cx, S * 0.34, 0, Math.PI * 2); ctx.stroke();
-  // Center crown emblem
-  ctx.fillStyle = '#' + trimHex.toString(16).padStart(6, '0');
-  ctx.font = `${S * 0.32}px serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('♔', cx, cx + 3);
-  const t = new THREE.CanvasTexture(c);
-  _chipTopCache[key] = t; return t;
-}
-
-function makeChip(bodyHex, trimHex) {
-  const top = new THREE.MeshStandardMaterial({ map: chipTopTexture(bodyHex, trimHex), roughness: 0.4, metalness: 0.12 });
-  const side = new THREE.MeshStandardMaterial({ color: bodyHex, roughness: 0.45 });
-  // CylinderGeometry material order: [side, top, bottom]
-  const chip = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.022, 24), [side, top, top]);
-  return chip;
-}
-
-// ── Decorative chip stacks on the felt near the 4 player seats ──
-function makeChipStack(bodyHex, trimHex, n) {
-  const g = new THREE.Group();
-  let y = 0;
-  for (let i = 0; i < n; i++) {
-    const chip = makeChip(bodyHex, trimHex);
-    chip.position.set((Math.random() - 0.5) * 0.006, y + 0.011, (Math.random() - 0.5) * 0.006);
-    chip.rotation.y = Math.random() * Math.PI * 2;
-    chip.castShadow = true; g.add(chip);
-    y += 0.022;
-  }
-  return g;
-}
-
-function buildChipStacks(scene) {
-  // [body, trim] per seat — gold crown/trim on every chip (matches reference)
-  const palettes = [
-    [0xa82c24, 0xd6b35a], [0x1e5aa8, 0xd6b35a],
-    [0x1e7a48, 0xd6b35a], [0x6840a0, 0xd6b35a],
-  ];
-  const seatAngles = [Math.PI / 2, Math.PI, -Math.PI / 2, 0];
-  seatAngles.forEach((a, i) => {
-    const r = 1.7;
-    const x = Math.cos(a) * r, z = Math.sin(a) * r;
-    const counts = [5 + (Math.random() * 4 | 0), 10 + (Math.random() * 8 | 0)];
-    // a small stack and a tall stack side by side, plus a contact shadow
-    counts.forEach((n, k) => {
-      const off = k === 0 ? -0.14 : 0.14;
-      const sx = x + Math.cos(a + Math.PI / 2) * off;
-      const sz = z + Math.sin(a + Math.PI / 2) * off;
-      const stack = makeChipStack(palettes[i][0], palettes[i][1], n);
-      stack.position.set(sx, FELT_TOP_Y, sz);
-      scene.add(stack);
-      const sh = new THREE.Mesh(new THREE.CircleGeometry(0.1, 16),
-        new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.22, depthWrite: false }));
-      sh.rotation.x = -Math.PI / 2; sh.position.set(sx, FELT_TOP_Y + 0.002, sz); scene.add(sh);
+    tryLoadAsset(CHAIR_MODELS[i], { reskin: false }).then((chair) => {
+      if (chair) {
+        // Scale to a consistent height, stand on the floor, face the table.
+        const box = new THREE.Box3().setFromObject(chair);
+        const size = box.getSize(new THREE.Vector3());
+        chair.scale.setScalar(CHAIR_HEIGHT / (size.y || 1));
+        chair.updateMatrixWorld(true);
+        const b2 = new THREE.Box3().setFromObject(chair);
+        const c = b2.getCenter(new THREE.Vector3());
+        chair.position.set(x - c.x, -b2.min.y, z - c.z);
+        chair.rotation.y = faceCenter;
+      } else {
+        // Fallback to the procedural chair if the model is missing.
+        chair = makeChair(cushionColors[i]);
+        chair.position.set(x, 0, z);
+        chair.rotation.y = Math.atan2(-x, -z);
+      }
+      scene.add(chair);
     });
   });
 }
 
-// ── Edge props: barrels, crates, chest ──
+// ── Edge props: barrels (imported SOT model), crates, chest ──
+const BARREL_SPOTS = [[-6.0, 4.6], [-6.4, 3.4], [6.3, -4.4]];
+const BARREL_H = 1.05;          // world height to fit the barrel model to
+
+// Imported SOT props the user mapped from the blueprint. Lantern/candle also emit
+// a warm light. Crate/chest fall back to procedural meshes if a model is missing.
+const SCENE_PROPS = [
+  { url: '/assets/furniture_09.glb', h: 0.85, x: 6.2,  z: 4.4,  fallback: (s) => addCrateStack(s, 6.2, 4.4) },  // crate
+  { url: '/assets/furniture_07.glb', h: 0.8,  x: 5.9,  z: -5.6, fallback: (s) => addChest(s, 5.9, -5.6) },       // chest
+  { url: '/assets/furniture_05.glb', h: 1.2,  x: -6.3, z: -5.0, light: 0xffb060 },                               // lantern
+  { url: '/assets/furniture_10.glb', h: 0.42, x: 6.6,  z: 1.2,  light: 0xffb866 },                               // candle cluster
+];
+
 function buildProps(scene) {
-  addBarrel(scene, -6.0, 4.6);
-  addBarrel(scene, -6.4, 3.4);
-  addCrateStack(scene, 6.2, 4.4);
-  addChest(scene, 5.9, -5.6);
-  addBarrel(scene, 6.3, -4.4);
+  buildBarrels(scene);
+  for (const p of SCENE_PROPS) {
+    tryLoadAsset(p.url, { reskin: false }).then((m) => {
+      if (!m) { p.fallback?.(scene); return; }
+      const box = new THREE.Box3().setFromObject(m);
+      const size = box.getSize(new THREE.Vector3());
+      m.scale.setScalar(p.h / (size.y || 1));
+      m.updateMatrixWorld(true);
+      const bb = new THREE.Box3().setFromObject(m);
+      const c = bb.getCenter(new THREE.Vector3());
+      m.position.set(p.x - c.x, -bb.min.y, p.z - c.z);
+      m.rotation.y = Math.random() * Math.PI * 2;
+      m.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+      scene.add(m);
+      if (p.light) {
+        const L = new THREE.PointLight(p.light, 0.7, 4.5, 2);
+        L.position.set(p.x, p.h * 0.7, p.z);
+        scene.add(L);
+      }
+    });
+  }
+}
+
+// Load the imported SOT barrel once, then clone it to each spot (falls back to a
+// procedural barrel if the model is missing).
+function buildBarrels(scene) {
+  tryLoadAsset('/assets/sot_barrel.glb', { reskin: false }).then((model) => {
+    for (const [x, z] of BARREL_SPOTS) {
+      if (!model) { addBarrel(scene, x, z); continue; }
+      const b = model.clone(true);
+      const box = new THREE.Box3().setFromObject(b);
+      const size = box.getSize(new THREE.Vector3());
+      b.scale.setScalar(BARREL_H / (size.y || 1));
+      b.updateMatrixWorld(true);
+      const bb = new THREE.Box3().setFromObject(b);
+      const c = bb.getCenter(new THREE.Vector3());
+      b.position.set(x - c.x, -bb.min.y, z - c.z);
+      b.rotation.y = Math.random() * Math.PI * 2;
+      b.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+      scene.add(b);
+    }
+  });
 }
 
 function addBarrel(scene, x, z) {
