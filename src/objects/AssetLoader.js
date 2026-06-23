@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/GLTFLoader';
-import { MeshoptDecoder } from 'three/meshopt_decoder';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { woodMaterial, brassMaterial, leatherMaterial, stoneMaterial, feltMaterial } from '../room/Materials.js';
 
 // Loads Blender-exported .glb assets and (optionally) re-skins their meshes with
