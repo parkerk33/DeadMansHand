@@ -1,4 +1,5 @@
-import * as RAPIER from '@dimforge/rapier3d-compat';
+//import * as RAPIER from '@dimforge/rapier3d-compat';
+import * as RAPIER from 'https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.19.3/+esm';
 import { FELT_TOP_Y } from '../room/Table.js';
 
 // Contained physics for the POT chips only. Chips are PUSHED in: each spawns flat
