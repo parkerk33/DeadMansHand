@@ -9,12 +9,12 @@ import { FELT_TOP_Y } from '../room/Table.js';
 const CHIP_DIAM = 0.12;
 
 export const CHIP_DENOMS = [   // value high → low (6 chips for now; gold = batch2_07)
-  { value: 1000, url: '/assets/batch2_07_lp.glb' },   // gold
-  { value: 500,  url: '/assets/batch2_06_lp.glb' },
-  { value: 250,  url: '/assets/batch2_03_lp.glb' },
-  { value: 100,  url: '/assets/chip_3_lp.glb' },
-  { value: 50,   url: '/assets/chip_2_lp.glb' },
-  { value: 25,   url: '/assets/chip_1_lp.glb' },
+  { value: 1000, url: '/public/assets/batch2_07_lp.glb' },   // gold
+  { value: 500,  url: '/public/assets/batch2_06_lp.glb' },
+  { value: 250,  url: '/public/assets/batch2_03_lp.glb' },
+  { value: 100,  url: '/public/assets/chip_3_lp.glb' },
+  { value: 50,   url: '/public/assets/chip_2_lp.glb' },
+  { value: 25,   url: '/public/assets/chip_1_lp.glb' },
 ];
 
 // A standard small-chip "float" laid down first so stacks/bets look like a real
