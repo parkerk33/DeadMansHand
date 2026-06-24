@@ -654,10 +654,10 @@ const BARREL_H = 1.05;          // world height to fit the barrel model to
 // Imported SOT props the user mapped from the blueprint. Lantern/candle also emit
 // a warm light. Crate/chest fall back to procedural meshes if a model is missing.
 const SCENE_PROPS = [
-  { url: '/public/assets/furniture_09.glb', h: 0.85, x: 6.2,  z: 4.4,  fallback: (s) => addCrateStack(s, 6.2, 4.4) },  // crate
-  { url: '/public/assets/furniture_07.glb', h: 0.8,  x: 5.9,  z: -5.6, fallback: (s) => addChest(s, 5.9, -5.6) },       // chest
-  { url: '/public/assets/furniture_05.glb', h: 1.2,  x: -6.3, z: -5.0, light: 0xffb060 },                               // lantern
-  { url: '/public/assets/furniture_10.glb', h: 0.42, x: 6.6,  z: 1.2,  light: 0xffb866 },                               // candle cluster
+  { url: 'public/assets/furniture_09.glb', h: 0.85, x: 6.2,  z: 4.4,  fallback: (s) => addCrateStack(s, 6.2, 4.4) },  // crate
+  { url: 'public/assets/furniture_07.glb', h: 0.8,  x: 5.9,  z: -5.6, fallback: (s) => addChest(s, 5.9, -5.6) },       // chest
+  { url: 'public/assets/furniture_05.glb', h: 1.2,  x: -6.3, z: -5.0, light: 0xffb060 },                               // lantern
+  { url: 'public/assets/furniture_10.glb', h: 0.42, x: 6.6,  z: 1.2,  light: 0xffb866 },                               // candle cluster
 ];
 
 function buildProps(scene) {
