@@ -8,7 +8,7 @@ const CW = 0.28, CH = 0.39, CD = 0.011;
 let _backTex = null;
 function getBackTexture() {
   if (_backTex) return _backTex;
-  _backTex = new THREE.TextureLoader().load('/assets/card_back_tex.jpg');
+  _backTex = new THREE.TextureLoader().load('public/assets/card_back_tex.jpg');
   _backTex.colorSpace = THREE.SRGBColorSpace;
   _backTex.anisotropy = 4;
   return _backTex;
