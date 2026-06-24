@@ -391,7 +391,7 @@ const CHANDELIER_Y = 4.3;     // height above the table it hangs at
 const CHANDELIER_SIZE = 2.6;  // target max dimension
 
 function buildChandelier(scene) {
-  tryLoadAsset('/assets/chandelier.glb', { reskin: false }).then((model) => {
+  tryLoadAsset('public/assets/chandelier.glb', { reskin: false }).then((model) => {
     if (model) {
       const box = new THREE.Box3().setFromObject(model);
       const size = box.getSize(new THREE.Vector3());
@@ -614,7 +614,7 @@ function makeChair(cushionColor, opts = {}) {
 
 // The 4 cardinal seats get the imported chair models; flip CHAIR_FACING if a
 // model's back ends up toward the table.
-const CHAIR_MODELS = ['/assets/chair_1.glb', '/assets/chair_2.glb', '/assets/chair_3.glb', '/assets/chair_4.glb'];
+const CHAIR_MODELS = ['public/assets/chair_1.glb', 'public/assets/chair_2.glb', 'public/assets/chair_3.glb', 'public/assets/chair_4.glb'];
 const CHAIR_SEAT_ANGLES = [Math.PI / 2, Math.PI, -Math.PI / 2, 0]; // south(player), west, north, east
 const CHAIR_HEIGHT = 2.3;
 const CHAIR_FACING = 0;   // matches the character facing; flip to Math.PI if backs face the table
@@ -687,7 +687,7 @@ function buildProps(scene) {
 // Load the imported SOT barrel once, then clone it to each spot (falls back to a
 // procedural barrel if the model is missing).
 function buildBarrels(scene) {
-  tryLoadAsset('/assets/sot_barrel.glb', { reskin: false }).then((model) => {
+  tryLoadAsset('public/assets/sot_barrel.glb', { reskin: false }).then((model) => {
     for (const [x, z] of BARREL_SPOTS) {
       if (!model) { addBarrel(scene, x, z); continue; }
       const b = model.clone(true);
