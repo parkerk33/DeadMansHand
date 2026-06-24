@@ -5,14 +5,14 @@ import { tryLoadAsset } from './AssetLoader.js';
 // Per-class AI character models (in public/assets). Missing files fall back to
 // the procedural bust, so the game still runs without them.
 const CHARACTER_GLB = {
-  Jester: '/public/assets/char_jester.glb',
-  Noble: '/public/assets/char_noble.glb',
-  Sorcerer: '/public/assets/char_sorcerer.glb',
-  Assassin: '/public/assets/char_assassin.glb',
-  Knight: '/public/assets/char_knight.glb',
-  Summoner: '/public/assets/char_summoner.glb',
-  Ranger: '/public/assets/char_ranger.glb',
-  Alchemist: '/public/assets/char_alchemist.glb',
+  Jester: 'public/assets/char_jester.glb',
+  Noble: 'public/assets/char_noble.glb',
+  Sorcerer: 'public/assets/char_sorcerer.glb',
+  Assassin: 'public/assets/char_assassin.glb',
+  Knight: 'public/assets/char_knight.glb',
+  Summoner: 'public/assets/char_summoner.glb',
+  Ranger: 'public/assets/char_ranger.glb',
+  Alchemist: 'public/assets/char_alchemist.glb',
 };
 const MODEL_TARGET_H = 2.0;       // world height to scale each character to
 const MODEL_FACING_OFFSET = 0;    // flip to Math.PI if models face away from center
