@@ -89,7 +89,7 @@ export async function initGallery(scene, camera, renderer) {
     const x = (col - (COLS - 1) / 2) * SPACING;
     const z = -row * SPACING;
     const it = ITEMS[i];
-    const obj = await loadAsset(`/assets/${it.file}.glb`, { reskin: false });
+    const obj = await loadAsset(`public/assets/${it.file}.glb`, { reskin: false });
     if (obj) {
       const box = new THREE.Box3().setFromObject(obj);
       const size = box.getSize(new THREE.Vector3());
